@@ -1,0 +1,15 @@
+[project]
+name = "jsondiff"
+version = "0.1.0"
+description = "Diff two JSON values and print a human-readable summary."
+requires-python = ">=3.8"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+jsondiff = "jsondiff.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["jsondiff*"]
