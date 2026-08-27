@@ -1,4 +1,5 @@
 """Core diffing logic for jsondiff."""
+import json
 from typing import Any
 
 
@@ -60,6 +61,29 @@ def diff(a: Any, b: Any, path: str = "$") -> Diff:
         if a != b:
             d._add(path, "changed", a, b)
     return d
+
+
+def format_json(d: Diff) -> str:
+    """Serialize a Diff as a JSON list of change records.
+
+    Each record has: path, kind (added/removed/changed/type), and the
+    old/new values (one or both may be null). Empty diff serializes to [].
+    """
+    out = []
+    for path, kind, old, new in d.changes:
+        rec = {"path": path, "kind": kind}
+        if kind == "added":
+            rec["new"] = new
+        elif kind == "removed":
+            rec["old"] = old
+        else:  # changed or type
+            rec["old"] = old
+            rec["new"] = new
+            if kind == "type":
+                rec["old_type"] = _type_name(old)
+                rec["new_type"] = _type_name(new)
+        out.append(rec)
+    return json.dumps(out, indent=2)
 
 
 def format_report(d: Diff) -> str:

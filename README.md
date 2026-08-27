@@ -21,9 +21,14 @@ jsondiff '{"a":1,"b":2}' '{"a":1,"c":3}'
 
 # Exit code 1 when differences exist (useful in CI)
 jsondiff -q before.json after.json && echo "identical" || echo "changed"
+
+# Machine-parseable output: JSON list of change records
+jsondiff --compact old.json new.json
 ```
 
 ## Output
+
+Human-readable (default):
 
 ```
 3 difference(s) found:
@@ -31,6 +36,28 @@ jsondiff -q before.json after.json && echo "identical" || echo "changed"
   $.c: + 3
   $.nested.x: True -> False
 ```
+
+`--compact` prints a JSON array instead, for scripting or piping into other
+tools. Each record carries the path, change kind, and old/new values (type
+changes also include the old/new type names):
+
+```json
+[
+  {
+    "path": "$.c",
+    "kind": "added",
+    "new": 3
+  },
+  {
+    "path": "$.nested.x",
+    "kind": "changed",
+    "old": true,
+    "new": false
+  }
+]
+```
+
+An identical pair serializes to `[]`.
 
 ## Tests
 
