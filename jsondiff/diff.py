@@ -44,7 +44,8 @@ def diff(a: Any, b: Any, path: str = "$") -> Diff:
             elif k not in a:
                 d._add(key, "added", new=b[k])
             else:
-                diff(a[k], b[k], key) and _merge(d)
+                sub = diff(a[k], b[k], key)
+                d.changes.extend(sub.changes)
     elif isinstance(a, list):
         for i in range(max(len(a), len(b))):
             item = f"{path}[{i}]"
@@ -59,10 +60,6 @@ def diff(a: Any, b: Any, path: str = "$") -> Diff:
         if a != b:
             d._add(path, "changed", a, b)
     return d
-
-
-def _merge(d):
-    pass
 
 
 def format_report(d: Diff) -> str:
