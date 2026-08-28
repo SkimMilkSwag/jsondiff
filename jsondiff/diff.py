@@ -29,8 +29,48 @@ class Diff:
         self.changes.append((path, kind, old, new))
 
 
-def diff(a: Any, b: Any, path: str = "$") -> Diff:
-    """Recursively compare two JSON values. Returns a Diff with all differences."""
+def _keyed_pairs(items_a: list, items_b: list, key_field: str):
+    """Pair elements of two object arrays by value of `key_field`.
+
+    Returns (added, removed, common) where common is a list of (item_a, item_b)
+    pairs matched in b's order. Elements missing the key field are never
+    matched and end up in added/removed; the caller decides what to do with
+    those. Duplicate key values pair up one-to-one in order of appearance.
+    """
+    def hashable(v):
+        return v is None or isinstance(v, (str, int, float, bool))
+
+    ia = {}
+    for x in items_a:
+        if isinstance(x, dict) and key_field in x and hashable(x[key_field]):
+            ia.setdefault(x[key_field], []).append(x)
+
+    seen_a = set()
+    matched_b = set()
+    common = []
+    for x in items_b:
+        if isinstance(x, dict) and key_field in x and hashable(x[key_field]):
+            v = x[key_field]
+            if v in ia and ia[v]:
+                cand = ia[v].pop(0)
+                if id(cand) not in seen_a:
+                    seen_a.add(id(cand))
+                    matched_b.add(id(x))
+                    common.append((cand, x))
+
+    added = [x for x in items_b if id(x) not in matched_b]
+    removed = [x for x in items_a if id(x) not in seen_a]
+    return added, removed, common
+
+
+def diff(a: Any, b: Any, path: str = "$", key_field: str = None) -> Diff:
+    """Recursively compare two JSON values. Returns a Diff with all differences.
+
+    When `key_field` is set and both sides are arrays of objects carrying a
+    `key_field`, matching elements are diffed pairwise by key (order- and
+    position-insensitive); unmatched elements on either side are reported as
+    added/removed with their key value in the path.
+    """
     d = Diff()
 
     if _type_name(a) != _type_name(b):
@@ -45,18 +85,30 @@ def diff(a: Any, b: Any, path: str = "$") -> Diff:
             elif k not in a:
                 d._add(key, "added", new=b[k])
             else:
-                sub = diff(a[k], b[k], key)
+                sub = diff(a[k], b[k], key, key_field)
                 d.changes.extend(sub.changes)
     elif isinstance(a, list):
-        for i in range(max(len(a), len(b))):
-            item = f"{path}[{i}]"
-            if i >= len(b):
-                d._add(item, "removed", a[i])
-            elif i >= len(a):
-                d._add(item, "added", new=b[i])
-            else:
-                sub = diff(a[i], b[i], item)
+        if key_field is not None:
+            added, removed, common = _keyed_pairs(a, b, key_field)
+            for item in common:
+                sub = diff(item[0], item[1], f"{path}<{key_field}>")
                 d.changes.extend(sub.changes)
+            for item in removed:
+                v = item[key_field] if isinstance(item, dict) and key_field in item else None
+                d._add(f"{path}[{v!r}]", "removed", item)
+            for item in added:
+                v = item[key_field] if isinstance(item, dict) and key_field in item else None
+                d._add(f"{path}[{v!r}]", "added", new=item)
+        else:
+            for i in range(max(len(a), len(b))):
+                item = f"{path}[{i}]"
+                if i >= len(b):
+                    d._add(item, "removed", a[i])
+                elif i >= len(a):
+                    d._add(item, "added", new=b[i])
+                else:
+                    sub = diff(a[i], b[i], item, key_field)
+                    d.changes.extend(sub.changes)
     else:
         if a != b:
             d._add(path, "changed", a, b)

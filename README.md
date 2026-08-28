@@ -24,6 +24,9 @@ jsondiff -q before.json after.json && echo "identical" || echo "changed"
 
 # Machine-parseable output: JSON list of change records
 jsondiff --compact old.json new.json
+
+# Diff arrays of objects by a key field instead of position
+jsondiff --key id old.json new.json
 ```
 
 ## Output
@@ -58,6 +61,28 @@ changes also include the old/new type names):
 ```
 
 An identical pair serializes to `[]`.
+
+### Keyed array diffing (`--key`)
+
+By default arrays are compared positionally, so reordering or inserting an
+element makes everything after it look changed. Pass `--key FIELD` (or
+`diff(a, b, key_field="FIELD")` in the library) and any array of objects that
+carries `FIELD` is matched by its value instead:
+
+```bash
+jsondiff --key id old.json new.json
+```
+
+```
+3 difference(s) found:
+  $.u<id>.n: 'b' -> 'c'
+  $.u[1]: - {'id': 1, 'n': 'a'}
+  $.u[3]: + {'id': 3, 'n': 'd'}
+```
+
+Added/removed elements are reported with their key value in the path; pure
+reordering produces no differences. Arrays without the field (or non-object
+arrays) still fall back to positional comparison.
 
 ## Tests
 

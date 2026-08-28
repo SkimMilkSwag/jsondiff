@@ -60,6 +60,54 @@ def test_format_json_type_change_includes_types():
     assert rec["old_type"] == "string" and rec["new_type"] == "number"
 
 
+def test_keyed_array_diffs_by_key_not_position():
+    a = {"users": [{"id": 1, "name": "alice"}, {"id": 2, "name": "bob"}]}
+    # bob renamed; carol appended — positional diff would flag index 0 and 1 as changed + index 2 added
+    b = {"users": [{"id": 1, "name": "alice"}, {"id": 2, "name": "robert"}, {"id": 3, "name": "carol"}]}
+    d = diff(a, b, key_field="id")
+    kinds = {c[1] for c in d.changes}
+    assert "changed" in kinds and "added" in kinds and "removed" not in kinds
+    by_path = {c[0]: c for c in d.changes}
+    assert "$.users<id>.name" in by_path
+    assert by_path["$.users<id>.name"][1] == "changed"
+
+
+def test_keyed_array_removed_element():
+    a = {"items": [{"sku": "x", "qty": 1}, {"sku": "y", "qty": 2}]}
+    b = {"items": [{"sku": "y", "qty": 3}]}
+    d = diff(a, b, key_field="sku")
+    assert any(c[1] == "removed" and c[0].endswith("['x']") for c in d.changes)
+    recs = json.loads(format_json(d))
+    removed = [r for r in recs if r["kind"] == "removed"]
+    assert len(removed) == 1 and removed[0]["old"]["sku"] == "x"
+
+
+def test_keyed_array_reordered_is_silent():
+    a = {"rows": [{"id": 1}, {"id": 2}, {"id": 3}]}
+    b = {"rows": [{"id": 3}, {"id": 2}, {"id": 1}]}
+    d = diff(a, b, key_field="id")
+    assert d.changes == []
+
+
+def test_keyless_array_without_key_flag_is_positional():
+    a = {"v": [1, 2]}
+    b = {"v": [2, 1]}
+    # no --key given: pure positional diff reports changes at both indices
+    assert len(diff(a, b).changes) == 2
+
+
+def test_cli_key_flag(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+    with pytest.raises(SystemExit):
+        main(['{"u":[{"id":1,"n":"a"},{"id":2,"n":"b"}]}', '{"u":[{"id":2,"n":"c"},{"id":3,"n":"d"}]}', "--key", "id", "--compact"])
+    out = json.loads(capsys.readouterr().out)
+    kinds = {r["path"]: r["kind"] for r in out}
+    assert kinds.get("$.u<id>.n") == "changed"
+    assert any(r["kind"] == "removed" and r["path"].endswith("[1]") for r in out)
+    assert any(r["kind"] == "added" and r["new"]["id"] == 3 for r in out)
+
+
 def test_cli_compact_flag(capsys):
     import pytest
     from jsondiff.__main__ import main

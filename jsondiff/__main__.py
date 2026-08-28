@@ -27,6 +27,13 @@ def main(argv=None):
         action="store_true",
         help="print machine-parseable output: a JSON list of change records",
     )
+    p.add_argument(
+        "-k",
+        "--key",
+        metavar="FIELD",
+        help="match array elements by FIELD value instead of position "
+        "(applies to every array of objects that carries the field)",
+    )
     args = p.parse_args(argv)
 
     def try_literal(s):
@@ -37,7 +44,7 @@ def main(argv=None):
 
     a = _load(args.a) if (not args.a.startswith("{") and not args.a.startswith("[")) else json.loads(args.a)
     b = _load(args.b) if (not args.b.startswith("{") and not args.b.startswith("[")) else json.loads(args.b)
-    d = diff(a, b)
+    d = diff(a, b, key_field=args.key)
     print(format_json(d) if args.compact else format_report(d))
     sys.exit(1 if (args.quiet and d.changes) else 0)
 
