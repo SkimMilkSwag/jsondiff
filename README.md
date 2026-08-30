@@ -25,6 +25,9 @@ jsondiff -q before.json after.json && echo "identical" || echo "changed"
 # Machine-parseable output: JSON list of change records
 jsondiff --compact old.json new.json
 
+# Change-count summary by kind (added/removed/changed/type + total)
+jsondiff --stats old.json new.json
+
 # Diff arrays of objects by a key field instead of position
 jsondiff --key id old.json new.json
 ```
@@ -61,6 +64,22 @@ changes also include the old/new type names):
 ```
 
 An identical pair serializes to `[]`.
+
+### Change-count summary (`--stats`)
+
+`--stats` replaces the change listing with a per-kind count, useful for
+dashboards or CI gates that care about *how much* changed rather than *what*:
+
+```
+  added: 1
+  removed: 1
+  changed: 0
+  type: 0
+  total: 2
+```
+
+All four kinds are always shown (zero-filled), plus a `total`. `--stats` takes
+precedence over `--compact` if both are given.
 
 ### Keyed array diffing (`--key`)
 

@@ -116,3 +116,58 @@ def test_cli_compact_flag(capsys):
     assert exc.value.code == 0
     out = json.loads(capsys.readouterr().out)
     assert {r["kind"] for r in out} == {"changed", "removed"}
+
+
+def test_stats_counts_empty():
+    from jsondiff.diff import diff, stats_counts
+    d = diff({"a": 1}, {"a": 1})
+    c = stats_counts(d)
+    assert c == {"added": 0, "removed": 0, "changed": 0, "type": 0, "total": 0}
+
+
+def test_stats_counts_mixed():
+    from jsondiff.diff import diff, stats_counts
+    # a: changed, b: removed, gone: removed, c: added, flag: type (bool->int), num: type (int->str)
+    a = {"a": 1, "b": "x", "gone": 9, "flag": True, "num": 5}
+    b = {"a": 2, "c": 3, "flag": 1, "num": "5"}
+    d = diff(a, b)
+    c = stats_counts(d)
+    assert c["added"] == 1 and c["removed"] == 2
+    assert c["changed"] == 1 and c["type"] == 2
+    assert c["total"] == 6
+
+
+def test_format_stats_zero_filled_and_total():
+    from jsondiff.diff import diff, format_stats
+    d = diff({"a": 1}, {"a": 2})  # single changed value
+    out = format_stats(d)
+    lines = out.splitlines()
+    assert lines[0].strip() == "added: 0"
+    assert lines[1].strip() == "removed: 0"
+    assert lines[2].strip() == "changed: 1"
+    assert lines[3].strip() == "type: 0"
+    assert lines[4].strip() == "total: 1"
+
+
+def test_cli_stats_flag(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"gone":9}', '{"a":2,"c":3}', "--stats"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out.strip()
+    # stats output is line-oriented, not JSON
+    parsed = dict(l.strip().split(": ") for l in out.splitlines())
+    # a changed, gone removed, c added
+    assert parsed["added"] == "1" and parsed["removed"] == "1"
+    assert parsed["changed"] == "1" and parsed["total"] == "3"
+
+
+def test_cli_stats_takes_precedence_over_compact(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+    with pytest.raises(SystemExit):
+        main(['{"a":1}', '{"a":2}', "--stats", "--compact"])
+    out = capsys.readouterr().out
+    # --stats wins: human summary, not JSON array
+    assert "total" in out and not out.lstrip().startswith("[")

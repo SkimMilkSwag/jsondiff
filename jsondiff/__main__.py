@@ -3,7 +3,7 @@ import argparse
 import json
 import sys
 
-from .diff import diff, format_report, format_json
+from .diff import diff, format_report, format_json, format_stats
 
 
 def _load(src):
@@ -34,6 +34,12 @@ def main(argv=None):
         help="match array elements by FIELD value instead of position "
         "(applies to every array of objects that carries the field)",
     )
+    p.add_argument(
+        "-s",
+        "--stats",
+        action="store_true",
+        help="print a change-count summary (added/removed/changed/type + total)",
+    )
     args = p.parse_args(argv)
 
     def try_literal(s):
@@ -45,7 +51,12 @@ def main(argv=None):
     a = _load(args.a) if (not args.a.startswith("{") and not args.a.startswith("[")) else json.loads(args.a)
     b = _load(args.b) if (not args.b.startswith("{") and not args.b.startswith("[")) else json.loads(args.b)
     d = diff(a, b, key_field=args.key)
-    print(format_json(d) if args.compact else format_report(d))
+    if args.stats:
+        print(format_stats(d))
+    elif args.compact:
+        print(format_json(d))
+    else:
+        print(format_report(d))
     sys.exit(1 if (args.quiet and d.changes) else 0)
 
 

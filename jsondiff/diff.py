@@ -154,3 +154,28 @@ def format_report(d: Diff) -> str:
             lines.append(f"  {path}: {old!r} -> {new!r}")
     header = f"{len(d.changes)} difference(s) found:"
     return header + "\n" + "\n".join(lines)
+
+
+def stats_counts(d: Diff) -> dict:
+    """Count changes per kind.
+
+    Returns a dict with every change-kind key (added/removed/changed/type)
+    present, zero-filled, plus a ``total`` entry for the overall count.
+    Kinds are ordered so the printed report is stable.
+    """
+    order = ["added", "removed", "changed", "type"]
+    counts = {k: 0 for k in order}
+    for _, kind, _, _ in d.changes:
+        if kind not in counts:
+            counts[kind] = 0  # defensive: unknown kinds still get counted
+        counts[kind] += 1
+    counts["total"] = len(d.changes)
+    return counts
+
+
+def format_stats(d: Diff) -> str:
+    """Render a one-line-per-kind change summary, e.g. ``--stats`` output."""
+    counts = stats_counts(d)
+    lines = [f"  {kind}: {counts[kind]}" for kind in ("added", "removed", "changed", "type")]
+    lines.append(f"  total: {counts['total']}")
+    return "\n".join(lines)
