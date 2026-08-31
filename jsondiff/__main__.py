@@ -2,18 +2,19 @@
 import argparse
 import json
 import sys
+from typing import Any, List, Optional, Tuple
 
 from .diff import diff, format_report, format_json, format_stats
 
 
-def _load(src):
+def _load(src: str) -> Any:
     if src == "-":
         return json.load(sys.stdin)
     with open(src) as f:
         return json.load(f)
 
 
-def main(argv=None):
+def main(argv: Optional[List[str]] = None) -> None:
     p = argparse.ArgumentParser(
         prog="jsondiff",
         description="Diff two JSON files or JSON strings and print a human-readable summary.",
@@ -42,7 +43,7 @@ def main(argv=None):
     )
     args = p.parse_args(argv)
 
-    def try_literal(s):
+    def try_literal(s: str) -> Tuple[Any, bool]:
         try:
             return json.loads(s), True
         except Exception:

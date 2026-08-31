@@ -13,3 +13,7 @@ jsondiff = "jsondiff.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["jsondiff*"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true

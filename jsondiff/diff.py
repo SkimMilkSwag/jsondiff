@@ -1,6 +1,19 @@
 """Core diffing logic for jsondiff."""
 import json
-from typing import Any
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+
+
+class Change(NamedTuple):
+    """A single change record: JSON path, kind, and old/new values.
+
+    Kind is one of ``added``/``removed``/``changed``/``type``; the side that
+    does not apply (new for removed, old for added) is None.
+    """
+
+    path: str
+    kind: str
+    old: Any = None
+    new: Any = None
 
 
 def _type_name(v: Any) -> str:
@@ -22,14 +35,16 @@ def _type_name(v: Any) -> str:
 class Diff:
     """Holds a flat list of change records."""
 
-    def __init__(self):
-        self.changes = []  # list of (path, kind, old, new)
+    def __init__(self) -> None:
+        self.changes: List[Change] = []
 
-    def _add(self, path, kind, old=None, new=None):
-        self.changes.append((path, kind, old, new))
+    def _add(self, path: str, kind: str, old: Any = None, new: Any = None) -> None:
+        self.changes.append(Change(path, kind, old, new))
 
 
-def _keyed_pairs(items_a: list, items_b: list, key_field: str):
+def _keyed_pairs(
+    items_a: List[Any], items_b: List[Any], key_field: str
+) -> Tuple[List[Any], List[Any], List[Tuple[Any, Any]]]:
     """Pair elements of two object arrays by value of `key_field`.
 
     Returns (added, removed, common) where common is a list of (item_a, item_b)
@@ -37,17 +52,17 @@ def _keyed_pairs(items_a: list, items_b: list, key_field: str):
     matched and end up in added/removed; the caller decides what to do with
     those. Duplicate key values pair up one-to-one in order of appearance.
     """
-    def hashable(v):
+    def hashable(v: Any) -> bool:
         return v is None or isinstance(v, (str, int, float, bool))
 
-    ia = {}
+    ia: Dict[Any, List[Any]] = {}
     for x in items_a:
         if isinstance(x, dict) and key_field in x and hashable(x[key_field]):
             ia.setdefault(x[key_field], []).append(x)
 
     seen_a = set()
     matched_b = set()
-    common = []
+    common: List[Tuple[Any, Any]] = []
     for x in items_b:
         if isinstance(x, dict) and key_field in x and hashable(x[key_field]):
             v = x[key_field]
@@ -58,12 +73,12 @@ def _keyed_pairs(items_a: list, items_b: list, key_field: str):
                     matched_b.add(id(x))
                     common.append((cand, x))
 
-    added = [x for x in items_b if id(x) not in matched_b]
-    removed = [x for x in items_a if id(x) not in seen_a]
+    added: List[Any] = [x for x in items_b if id(x) not in matched_b]
+    removed: List[Any] = [x for x in items_a if id(x) not in seen_a]
     return added, removed, common
 
 
-def diff(a: Any, b: Any, path: str = "$", key_field: str = None) -> Diff:
+def diff(a: Any, b: Any, path: str = "$", key_field: Optional[str] = None) -> Diff:
     """Recursively compare two JSON values. Returns a Diff with all differences.
 
     When `key_field` is set and both sides are arrays of objects carrying a
@@ -101,13 +116,13 @@ def diff(a: Any, b: Any, path: str = "$", key_field: str = None) -> Diff:
                 d._add(f"{path}[{v!r}]", "added", new=item)
         else:
             for i in range(max(len(a), len(b))):
-                item = f"{path}[{i}]"
+                item_path = f"{path}[{i}]"
                 if i >= len(b):
-                    d._add(item, "removed", a[i])
+                    d._add(item_path, "removed", a[i])
                 elif i >= len(a):
-                    d._add(item, "added", new=b[i])
+                    d._add(item_path, "added", new=b[i])
                 else:
-                    sub = diff(a[i], b[i], item, key_field)
+                    sub = diff(a[i], b[i], item_path, key_field)
                     d.changes.extend(sub.changes)
     else:
         if a != b:
@@ -156,7 +171,7 @@ def format_report(d: Diff) -> str:
     return header + "\n" + "\n".join(lines)
 
 
-def stats_counts(d: Diff) -> dict:
+def stats_counts(d: Diff) -> Dict[str, int]:
     """Count changes per kind.
 
     Returns a dict with every change-kind key (added/removed/changed/type)
