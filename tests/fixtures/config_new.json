@@ -1,0 +1,10 @@
+{
+  "name": "acme",
+  "plan": "enterprise",
+  "limits": {
+    "api_calls": 10000,
+    "storage_mb": 2048
+  },
+  "features": ["sso", "audit-log", "scim"],
+  "tags": ["us-east"]
+}

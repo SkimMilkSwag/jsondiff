@@ -171,3 +171,63 @@ def test_cli_stats_takes_precedence_over_compact(capsys):
     out = capsys.readouterr().out
     # --stats wins: human summary, not JSON array
     assert "total" in out and not out.lstrip().startswith("[")
+
+
+# --- integration: two fixture files read from disk -------------------------
+
+FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+def test_cli_diff_fixture_files_from_disk(tmp_path, capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    # copy the checked-in fixtures to a temp dir so the test exercises real
+    # file I/O paths (not the literal-JSON shortcut) without touching repo state
+    old = tmp_path / "old.json"
+    new = tmp_path / "new.json"
+    old.write_text(open(os.path.join(FIXTURES, "config_old.json")).read())
+    new.write_text(open(os.path.join(FIXTURES, "config_new.json")).read())
+
+    with pytest.raises(SystemExit) as exc:
+        main([str(old), str(new), "--compact"])
+    assert exc.value.code == 0  # no -q flag: exit 0 even when diffs exist
+    out = json.loads(capsys.readouterr().out)
+    recs = {r["path"]: r for r in out}
+    assert "$" not in recs  # top-level object persists, not itself a change
+    assert recs["$.plan"]["kind"] == "changed"
+    assert recs["$.plan"]["old"] == "pro" and recs["$.plan"]["new"] == "enterprise"
+    assert recs["$.limits.api_calls"]["kind"] == "changed"
+    assert recs["$.features[2]"]["kind"] == "added"
+    # tags have no key field, so they diff positionally: [beta, us-east] -> [us-east]
+    assert recs["$.tags[0]"]["kind"] == "changed"
+    assert recs["$.tags[1]"]["kind"] == "removed"
+    assert set(recs) == {
+        "$.plan", "$.limits.api_calls", "$.features[2]", "$.tags[0]", "$.tags[1]"
+    }
+
+
+def test_cli_fixture_files_identical_exit_zero(tmp_path, capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    f = tmp_path / "same.json"
+    f.write_text(open(os.path.join(FIXTURES, "config_old.json")).read())
+    with pytest.raises(SystemExit) as exc:
+        main([str(f), str(f)])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == "No differences."
+
+
+def test_cli_fixture_files_quiet_exits_one_on_diff(tmp_path, capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    old = tmp_path / "old.json"
+    new = tmp_path / "new.json"
+    old.write_text(open(os.path.join(FIXTURES, "config_old.json")).read())
+    new.write_text(open(os.path.join(FIXTURES, "config_new.json")).read())
+    with pytest.raises(SystemExit) as exc:
+        main([str(old), str(new), "-q"])
+    assert exc.value.code == 1  # -q: 1 when differences exist, and no report printed
+    assert capsys.readouterr().out == ""
