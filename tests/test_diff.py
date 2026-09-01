@@ -198,12 +198,14 @@ def test_cli_diff_fixture_files_from_disk(tmp_path, capsys):
     assert recs["$.plan"]["kind"] == "changed"
     assert recs["$.plan"]["old"] == "pro" and recs["$.plan"]["new"] == "enterprise"
     assert recs["$.limits.api_calls"]["kind"] == "changed"
+    assert recs["$.limits.storage_mb"]["kind"] == "changed"
     assert recs["$.features[2]"]["kind"] == "added"
     # tags have no key field, so they diff positionally: [beta, us-east] -> [us-east]
     assert recs["$.tags[0]"]["kind"] == "changed"
     assert recs["$.tags[1]"]["kind"] == "removed"
     assert set(recs) == {
-        "$.plan", "$.limits.api_calls", "$.features[2]", "$.tags[0]", "$.tags[1]"
+        "$.plan", "$.limits.api_calls", "$.limits.storage_mb",
+        "$.features[2]", "$.tags[0]", "$.tags[1]",
     }
 
 
@@ -229,5 +231,8 @@ def test_cli_fixture_files_quiet_exits_one_on_diff(tmp_path, capsys):
     new.write_text(open(os.path.join(FIXTURES, "config_new.json")).read())
     with pytest.raises(SystemExit) as exc:
         main([str(old), str(new), "-q"])
-    assert exc.value.code == 1  # -q: 1 when differences exist, and no report printed
-    assert capsys.readouterr().out == ""
+    # -q only controls the exit code (1 when differences exist); the human
+    # report is still printed
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "6 difference(s)" in out
