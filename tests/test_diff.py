@@ -236,3 +236,44 @@ def test_cli_fixture_files_quiet_exits_one_on_diff(tmp_path, capsys):
     assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "6 difference(s)" in out
+
+
+def test_fail_on_change_exits_one_when_diffs_exist(tmp_path, capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    old = tmp_path / "old.json"
+    new = tmp_path / "new.json"
+    old.write_text(open(os.path.join(FIXTURES, "config_old.json")).read())
+    new.write_text(open(os.path.join(FIXTURES, "config_new.json")).read())
+    with pytest.raises(SystemExit) as exc:
+        main([str(old), str(new), "--fail-on-change", "--compact"])
+    assert exc.value.code == 1
+    # the compact JSON report is still printed alongside the exit code
+    recs = json.loads(capsys.readouterr().out)
+    assert len(recs) >= 1
+
+
+def test_fail_on_change_exits_zero_when_clean(tmp_path, capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    f = tmp_path / "same.json"
+    f.write_text(open(os.path.join(FIXTURES, "config_old.json")).read())
+    with pytest.raises(SystemExit) as exc:
+        main([str(f), str(f), "--fail-on-change"])
+    assert exc.value.code == 0
+
+
+def test_fail_on_change_is_an_alias_for_q(capsys):
+    # both spellings map to the same flag: exit-code semantics are identical
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1}', '{"a":2}', "--fail-on-change"])
+    assert exc.value.code == 1
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1}', '{"a":2}', "-q"])
+    assert exc.value.code == 1

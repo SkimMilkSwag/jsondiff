@@ -21,7 +21,15 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
     p.add_argument("a", help="first JSON file, '-' for stdin, or a literal JSON string")
     p.add_argument("b", help="second JSON file, '-' for stdin, or a literal JSON string")
-    p.add_argument("-q", "--quiet", action="store_true", help="exit 0 if no differences, 1 if any")
+    p.add_argument(
+        "-q",
+        "--quiet",
+        "--fail-on-change",
+        dest="quiet",
+        action="store_true",
+        help="exit 1 when differences exist, 0 when clean (CI-friendly); "
+             "--fail-on-change is a self-documenting alias for -q",
+    )
     p.add_argument(
         "-c",
         "--compact",

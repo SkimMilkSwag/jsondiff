@@ -22,6 +22,9 @@ jsondiff '{"a":1,"b":2}' '{"a":1,"c":3}'
 # Exit code 1 when differences exist (useful in CI)
 jsondiff -q before.json after.json && echo "identical" || echo "changed"
 
+# Self-documenting alias for the CI exit-code flag
+jsondiff --fail-on-change old.json new.json
+
 # Machine-parseable output: JSON list of change records
 jsondiff --compact old.json new.json
 
