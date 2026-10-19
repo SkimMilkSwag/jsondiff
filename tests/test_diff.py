@@ -277,3 +277,91 @@ def test_fail_on_change_is_an_alias_for_q(capsys):
     with pytest.raises(SystemExit) as exc:
         main(['{"a":1}', '{"a":2}', "-q"])
     assert exc.value.code == 1
+
+
+# --- --ignore (key-name skipping) -----------------------------------------
+
+def test_parse_ignore_basic():
+    from jsondiff.diff import parse_ignore
+
+    assert parse_ignore(None) is None
+    assert parse_ignore("") is None
+    assert parse_ignore("build") == frozenset({"build"})
+    assert parse_ignore("a,b,c") == frozenset({"a", "b", "c"})
+    # whitespace and empty segments are tolerated
+    assert parse_ignore(" a ,, b ") == frozenset({"a", "b"})
+
+
+def test_ignore_skips_named_keys_everywhere():
+    a = {"build": 123, "name": "x", "cfg": {"build": 7, "keep": 1}}
+    b = {"build": 456, "name": "y", "cfg": {"build": 8, "keep": 2}}
+    full = diff(a, b)
+    assert len(full.changes) == 4  # build, name, cfg.build, cfg.keep
+
+    d = diff(a, b, ignore=frozenset({"build"}))
+    paths = {c[0] for c in d.changes}
+    # both "build" levels are suppressed; everything else still diffs
+    assert paths == {"$.name", "$.cfg.keep"}
+
+
+def test_ignore_handles_added_and_removed_keys():
+    a = {"volatile": 1, "stable": 5}
+    b = {"other": 9, "stable": 5}
+    d = diff(a, b, ignore=frozenset({"volatile", "other"}))
+    assert d.changes == []
+
+
+def test_ignore_dotted_name_targets_one_path_only():
+    # "$.cfg.build" suppresses the child inside cfg, but a top-level "build"
+    # (or another nested "build") is still diffed.
+    a = {"build": 1, "cfg": {"build": 2}, "deep": {"inner": {"build": 3}}}
+    b = {"build": 2, "cfg": {"build": 9}, "deep": {"inner": {"build": 4}}}
+    d = diff(a, b, ignore=frozenset({"$.cfg.build"}))
+    paths = {c[0] for c in d.changes}
+    assert paths == {"$.build", "$.deep.inner.build"}
+
+
+def test_ignore_type_change_suppressed():
+    a = {"ts": 1000}
+    b = {"ts": "epoch"}
+    d = diff(a, b, ignore=frozenset({"ts"}))
+    assert d.changes == []
+    # without the ignore, it's a type change
+    assert any(c[1] == "type" for c in diff(a, b).changes)
+
+
+def test_cli_ignore_flag(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"build":1,"a":1}', '{"build":2,"a":2}', "--ignore", "build", "--compact"])
+    assert exc.value.code == 0
+    recs = json.loads(capsys.readouterr().out)
+    # only the non-ignored key remains; exit 0 because a changed is still
+    # reported (exit code only flips with -q/--fail-on-change)
+    assert [r["path"] for r in recs] == ["$.a"]
+
+
+def test_cli_ignore_comma_list_and_q(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(
+            ['{"b":1,"c":2}', '{"b":9,"c":3}', "--ignore", "b,c", "-q", "-c"]
+        )
+    assert exc.value.code == 0, "both keys ignored -> clean -> exit 0 with -q"
+    out = capsys.readouterr().out
+    assert json.loads(out) == []
+
+
+def test_cli_ignore_does_not_affect_stats_without_flag(capsys):
+    # sanity: without --ignore the stats report still sees everything
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit):
+        main(['{"build":1}', '{"build":2}', "--stats"])
+    out = capsys.readouterr().out
+    assert "changed: 1" in out

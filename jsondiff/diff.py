@@ -32,6 +32,20 @@ def _type_name(v: Any) -> str:
     return type(v).__name__
 
 
+def parse_ignore(raw: Optional[str]) -> Optional[frozenset]:
+    """Parse a ``--ignore key1,key2`` argument into a frozenset of keys.
+
+    Returns None when ``raw`` is None/empty (no ignoring), so callers can
+    keep the fast path without checking membership against an empty set.
+    Whitespace around each key is stripped; empty segments are dropped, so
+    ``"a,, b "`` parses to ``frozenset({"a", "b"})``.
+    """
+    if not raw:
+        return None
+    keys = {k.strip() for k in raw.split(",") if k.strip()}
+    return frozenset(keys) or None
+
+
 class Diff:
     """Holds a flat list of change records."""
 
@@ -78,13 +92,26 @@ def _keyed_pairs(
     return added, removed, common
 
 
-def diff(a: Any, b: Any, path: str = "$", key_field: Optional[str] = None) -> Diff:
+def diff(
+    a: Any,
+    b: Any,
+    path: str = "$",
+    key_field: Optional[str] = None,
+    ignore: Optional[frozenset] = None,
+) -> Diff:
     """Recursively compare two JSON values. Returns a Diff with all differences.
 
     When `key_field` is set and both sides are arrays of objects carrying a
     `key_field`, matching elements are diffed pairwise by key (order- and
     position-insensitive); unmatched elements on either side are reported as
     added/removed with their key value in the path.
+
+    When `ignore` is a frozenset of key names, any object member whose name
+    appears in the set is skipped at every level (added/removed/changed/type
+    alike) — e.g. ``--ignore "build"`` suppresses a fluctuating ``build``
+    field wherever it occurs. To target one specific nested path instead,
+    pass its full JSON path (e.g. ``--ignore "$.a.b"`` matches only the child
+    ``b`` inside object ``a``, leaving any other ``b`` untouched).
     """
     d = Diff()
 
@@ -93,20 +120,30 @@ def diff(a: Any, b: Any, path: str = "$", key_field: Optional[str] = None) -> Di
         return d
 
     if isinstance(a, dict):
-        for k in list(a.keys()) + [k for k in b.keys() if k not in a]:
+        # compute the union of keys once; for the root object with an ignore
+        # set, filter out ignored names before diffing.
+        all_keys = list(a.keys()) + [k for k in b.keys() if k not in a]
+        if ignore:
+            # A bare name ("build") suppresses that key at every level; a
+            # full path ("$.a.b") suppresses only the matching location.  The
+            # candidate JSON path for each member is "parent + .k", so both
+            # forms fall out of one membership test.
+            parent = "" if path == "$" else path + "."
+            all_keys = [k for k in all_keys if (k not in ignore and (parent + k) not in ignore)]
+        for k in all_keys:
             key = f"{path}.{k}"
             if k not in b:
                 d._add(key, "removed", a[k])
             elif k not in a:
                 d._add(key, "added", new=b[k])
             else:
-                sub = diff(a[k], b[k], key, key_field)
+                sub = diff(a[k], b[k], key, key_field, ignore)
                 d.changes.extend(sub.changes)
     elif isinstance(a, list):
         if key_field is not None:
             added, removed, common = _keyed_pairs(a, b, key_field)
             for item in common:
-                sub = diff(item[0], item[1], f"{path}<{key_field}>")
+                sub = diff(item[0], item[1], f"{path}<{key_field}>", None, ignore)
                 d.changes.extend(sub.changes)
             for item in removed:
                 v = item[key_field] if isinstance(item, dict) and key_field in item else None
@@ -122,7 +159,7 @@ def diff(a: Any, b: Any, path: str = "$", key_field: Optional[str] = None) -> Di
                 elif i >= len(a):
                     d._add(item_path, "added", new=b[i])
                 else:
-                    sub = diff(a[i], b[i], item_path, key_field)
+                    sub = diff(a[i], b[i], item_path, key_field, ignore)
                     d.changes.extend(sub.changes)
     else:
         if a != b:

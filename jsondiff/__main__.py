@@ -4,7 +4,7 @@ import json
 import sys
 from typing import Any, List, Optional, Tuple
 
-from .diff import diff, format_report, format_json, format_stats
+from .diff import diff, format_report, format_json, format_stats, parse_ignore
 
 
 def _load(src: str) -> Any:
@@ -44,6 +44,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         "(applies to every array of objects that carries the field)",
     )
     p.add_argument(
+        "-i",
+        "--ignore",
+        metavar="KEYS",
+        help="comma-separated key names to skip in the diff (applies at "
+        "every nesting level; a full JSON path like '$.a.b' targets only that "
+        "location)",
+    )
+    p.add_argument(
         "-s",
         "--stats",
         action="store_true",
@@ -59,7 +67,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     a = _load(args.a) if (not args.a.startswith("{") and not args.a.startswith("[")) else json.loads(args.a)
     b = _load(args.b) if (not args.b.startswith("{") and not args.b.startswith("[")) else json.loads(args.b)
-    d = diff(a, b, key_field=args.key)
+    d = diff(a, b, key_field=args.key, ignore=parse_ignore(args.ignore))
     if args.stats:
         print(format_stats(d))
     elif args.compact:
