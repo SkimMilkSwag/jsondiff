@@ -365,3 +365,73 @@ def test_cli_ignore_does_not_affect_stats_without_flag(capsys):
         main(['{"build":1}', '{"build":2}', "--stats"])
     out = capsys.readouterr().out
     assert "changed: 1" in out
+
+
+# --- malformed-input parse errors (line/column) ----------------------------
+
+def test_parse_error_file_reports_line_and_column(tmp_path, capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    bad = tmp_path / "bad.json"
+    # second line is where the syntax breaks: missing quote on "name"
+    bad.write_text('{"ok": 1,\n  "name": oops\n}\n')
+    good = tmp_path / "good.json"
+    good.write_text('{"a": 1}')
+
+    with pytest.raises(SystemExit) as exc:
+        main([str(bad), str(good)])
+    # exit code 2 distinguishes a parse failure from -q's diff-exists exit 1
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "line 2, column 11" in err
+    assert "bad.json" in err
+    assert "Expecting value" in err
+
+
+def test_parse_error_second_argument_is_attributed(tmp_path, capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    good = tmp_path / "good.json"
+    good.write_text('{"a": 1}')
+    bad = tmp_path / "bad.json"
+    bad.write_text('[1, 2,\n]')
+
+    with pytest.raises(SystemExit) as exc:
+        main([str(good), str(bad)])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    # the error points at the second file (line 2 is the empty continuation)
+    assert "bad.json" in err and "line 2" in err
+
+
+def test_parse_error_literal_json_reports_line_and_column(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a": 1\n"b"}', '{"a": 1}'])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    # literal path: no file name, but the line/column of the syntax break
+    assert "line 2, column 1" in err
+    assert "literal JSON" in err
+
+
+def test_parse_error_stdin_reports_position(capsys, monkeypatch):
+    import io
+    import pytest
+    from jsondiff import __main__ as m
+
+    class FakeStdin(io.StringIO):
+        # json.load iterates the file object line by line; StringIO supports
+        # both the read() and iteration protocols it needs.
+        pass
+
+    monkeypatch.setattr(m.sys, "stdin", FakeStdin('{"a": 1,\n"b"}'))
+    with pytest.raises(SystemExit) as exc:
+        m.main(["-", "{}"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "<stdin>" in err and "line 2" in err
