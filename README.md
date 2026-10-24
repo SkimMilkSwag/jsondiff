@@ -106,6 +106,34 @@ Added/removed elements are reported with their key value in the path; pure
 reordering produces no differences. Arrays without the field (or non-object
 arrays) still fall back to positional comparison.
 
+## CI (GitHub Actions)
+
+`--fail-on-change` makes the tool CI-friendly: exit code 0 when the two JSON
+values are identical, 1 when they differ, 2 when a file fails to parse. Wire it
+into a workflow to fail a pipeline when a rendered artifact drifts from its
+committed copy (or any other "two configs should match" check):
+
+```yaml
+# .github/workflows/jsondiff.yml
+name: jsondiff
+on: [push, pull_request]
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install .
+      - name: Fail if rendered.json drifted from committed.json
+        run: jsondiff --fail-on-change committed.json rendered.json
+```
+
+The exit codes also make it composable in shell pipelines without parsing the
+human-readable output — `--compact` emits JSON when you *do* need to inspect
+what changed after the gate fails.
+
 ## Tests
 
 ```bash
