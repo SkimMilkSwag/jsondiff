@@ -32,6 +32,26 @@ def _type_name(v: Any) -> str:
     return type(v).__name__
 
 
+def _json_equal(a: Any, b: Any) -> bool:
+    """Semantic JSON equality: ``1 == 1.0``, dict key order irrelevant.
+
+    bool is checked before number because in Python ``True == 1``; keeping
+    them distinct matches the ``_type_name`` split used at the top of
+    ``diff`` (a bool/number pair is a ``type`` change, not equality).
+    """
+    if _type_name(a) != _type_name(b):
+        return False
+    if isinstance(a, dict):
+        if a.keys() != b.keys():
+            return False
+        return all(_json_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        if len(a) != len(b):
+            return False
+        return all(_json_equal(x, y) for x, y in zip(a, b))
+    return a == b
+
+
 def parse_ignore(raw: Optional[str]) -> Optional[frozenset]:
     """Parse a ``--ignore key1,key2`` argument into a frozenset of keys.
 
@@ -54,6 +74,32 @@ class Diff:
 
     def _add(self, path: str, kind: str, old: Any = None, new: Any = None) -> None:
         self.changes.append(Change(path, kind, old, new))
+
+    @staticmethod
+    def normalize(v: Any) -> str:
+        """Canonical string form of a JSON value for equality comparison.
+
+        Uses ``json.dumps`` with sorted keys so that dict key order does not
+        produce spurious differences. Numeric int/float equivalence (1 == 1.0)
+        is handled separately by ``_json_equal`` — ``json.dumps`` alone cannot
+        express it because ``dumps(1)`` and ``dumps(1.0)`` differ.
+        """
+        if v is None:
+            return "null"
+        try:
+            return json.dumps(v, sort_keys=True)
+        except (TypeError, ValueError):
+            return repr(v)
+
+    def _add_normalized(self, path: str, kind: str, old: Any = None, new: Any = None) -> None:
+        """Add a change only if old and new differ under semantic equality.
+
+        Uses ``_json_equal`` which treats ``1`` and ``1.0`` as the same JSON
+        number and ignores dict key order, so neither produces a record. The
+        original (un-normalized) values are stored in the record for display.
+        """
+        if not _json_equal(old, new):
+            self.changes.append(Change(path, kind, old, new))
 
 
 def _keyed_pairs(
@@ -98,8 +144,15 @@ def diff(
     path: str = "$",
     key_field: Optional[str] = None,
     ignore: Optional[frozenset] = None,
+    normalize: bool = True,
 ) -> Diff:
     """Recursively compare two JSON values. Returns a Diff with all differences.
+
+    When `normalize` is true (the default), scalar and object values are
+    compared under their canonical JSON form — dict key order is ignored and
+    ``1`` equals ``1.0`` — so only semantically meaningful changes are
+    reported. Pass ``normalize=False`` (CLI flag ``--no-normalize``) to
+    treat key-order swaps and int/float differences as real changes.
 
     When `key_field` is set and both sides are arrays of objects carrying a
     `key_field`, matching elements are diffed pairwise by key (order- and
@@ -130,6 +183,15 @@ def diff(
             # forms fall out of one membership test.
             parent = "" if path == "$" else path + "."
             all_keys = [k for k in all_keys if (k not in ignore and (parent + k) not in ignore)]
+        if normalize:
+            # semantic mode: same members, no value differences -> silent
+            if _json_equal(a, b):
+                return d
+        else:
+            # strict mode: key order is part of the document, so a reorder of
+            # present keys is itself a change (reported before member diffs)
+            if list(a.keys()) != list(b.keys()):
+                d._add(path, "changed", a, b)
         for k in all_keys:
             key = f"{path}.{k}"
             if k not in b:
@@ -137,13 +199,13 @@ def diff(
             elif k not in a:
                 d._add(key, "added", new=b[k])
             else:
-                sub = diff(a[k], b[k], key, key_field, ignore)
+                sub = diff(a[k], b[k], key, key_field, ignore, normalize)
                 d.changes.extend(sub.changes)
     elif isinstance(a, list):
         if key_field is not None:
             added, removed, common = _keyed_pairs(a, b, key_field)
             for item in common:
-                sub = diff(item[0], item[1], f"{path}<{key_field}>", None, ignore)
+                sub = diff(item[0], item[1], f"{path}<{key_field}>", None, ignore, normalize)
                 d.changes.extend(sub.changes)
             for item in removed:
                 v = item[key_field] if isinstance(item, dict) and key_field in item else None
@@ -159,10 +221,14 @@ def diff(
                 elif i >= len(a):
                     d._add(item_path, "added", new=b[i])
                 else:
-                    sub = diff(a[i], b[i], item_path, key_field, ignore)
+                    sub = diff(a[i], b[i], item_path, key_field, ignore, normalize)
                     d.changes.extend(sub.changes)
     else:
-        if a != b:
+        if normalize:
+            d._add_normalized(path, "changed", a, b)
+        elif repr(a) != repr(b):
+            # strict mode compares the written form: 1 vs 1.0 differ even
+            # though Python's == treats them as one and the same number
             d._add(path, "changed", a, b)
     return d
 

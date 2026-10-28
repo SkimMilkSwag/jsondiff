@@ -435,3 +435,77 @@ def test_parse_error_stdin_reports_position(capsys, monkeypatch):
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "<stdin>" in err and "line 2" in err
+
+
+def test_normalize_silences_key_order_swap():
+    # dict key order is not a semantic change by default
+    a = {"x": 1, "y": [3, 2, 1], "z": {"m": True}}
+    b = {"z": {"m": True}, "y": [3, 2, 1], "x": 1}
+    assert diff(a, b).changes == []
+
+
+def test_normalize_silences_int_float_equivalence():
+    # 1 and 1.0 are the same JSON number; bool stays distinct from number
+    assert diff({"n": 1}, {"n": 1.0}).changes == []
+    assert diff({"n": 1.5}, {"n": 1.50}).changes == []
+    # bool vs number is a real type change (type check runs before normalization)
+    d = diff({"b": True}, {"b": 1})
+    assert len(d.changes) == 1 and d.changes[0].kind == "type"
+
+
+def test_no_normalize_flags_key_order_swap():
+    a = {"x": 1, "y": [3, 2, 1]}
+    b = {"y": [3, 2, 1], "x": 1}
+    d = diff(a, b, normalize=False)
+    assert len(d.changes) == 1 and d.changes[0].kind == "changed"
+
+
+def test_no_normalize_flags_int_float_difference():
+    d = diff({"n": 1}, {"n": 1.0}, normalize=False)
+    assert len(d.changes) == 1 and d.changes[0].kind == "changed"
+
+
+def test_normalize_applies_at_every_depth():
+    # nested key-order swap inside arrays and objects is silenced
+    a = {"rows": [{"id": 1, "tags": {"b": 2, "a": 1}}]}
+    b = {"rows": [{"tags": {"a": 1, "b": 2}, "id": 1}]}
+    assert diff(a, b).changes == []
+
+
+def test_normalize_equal_nested_values_still_record_originals():
+    # a genuine change under normalization keeps the original values in the record
+    d = diff({"n": 1.0}, {"n": 2})
+    assert len(d.changes) == 1
+    rec = d.changes[0]
+    assert rec.kind == "changed" and rec.old == 1.0 and rec.new == 2
+
+
+def test_cli_no_normalize_flag(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit):
+        main(["--no-normalize", '{"x": 1, "y": 2}', '{"y": 2, "x": 1}'])
+    out = capsys.readouterr().out
+    assert "1 difference" in out
+
+
+def test_cli_no_normalize_with_compact(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit):
+        main(["--no-normalize", "--compact", '{"x": 1}', '{"x": 1.0}'])
+    out = capsys.readouterr().out
+    records = __import__("json").loads(out)
+    assert len(records) == 1 and records[0]["kind"] == "changed"
+
+
+def test_cli_normalize_clean_by_default(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit):
+        main(["--compact", '{"x": 1, "y": 2}', '{"y": 2, "x": 1}'])
+    out = capsys.readouterr().out
+    assert __import__("json").loads(out) == []

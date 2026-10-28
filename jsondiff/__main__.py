@@ -76,6 +76,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         action="store_true",
         help="print a change-count summary (added/removed/changed/type + total)",
     )
+    p.add_argument(
+        "-N",
+        "--no-normalize",
+        action="store_true",
+        help="compare values exactly as written: dict key order and the "
+             "int/float distinction (1 vs 1.0) are treated as differences",
+    )
     args = p.parse_args(argv)
 
     def load_arg(name: str, src: str) -> Any:
@@ -103,7 +110,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     except ParseError as e:
         print(f"jsondiff: error parsing {e.where}: line {e.line}, column {e.column} — {e.msg}", file=sys.stderr)
         sys.exit(2)
-    d = diff(a, b, key_field=args.key, ignore=parse_ignore(args.ignore))
+    d = diff(a, b, key_field=args.key, ignore=parse_ignore(args.ignore),
+             normalize=not args.no_normalize)
     if args.stats:
         print(format_stats(d))
     elif args.compact:

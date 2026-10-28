@@ -33,6 +33,9 @@ jsondiff --stats old.json new.json
 
 # Diff arrays of objects by a key field instead of position
 jsondiff --key id old.json new.json
+
+# Strict comparison: dict key order and int/float form (1 vs 1.0) are diffs
+jsondiff --no-normalize old.json new.json
 ```
 
 ## Output
@@ -45,6 +48,22 @@ Human-readable (default):
   $.c: + 3
   $.nested.x: True -> False
 ```
+
+### Value normalization
+
+By default jsondiff compares values *semantically*: dict key order is ignored
+and `1` equals `1.0` (they are the same JSON number), so a re-serialized or
+reordered document that changed nothing produces no diff — which is what you
+want when gate-checking rendered artifacts against committed copies. Pass
+`--no-normalize` to compare the written form instead, where key reordering and
+`1` vs `1.0` are reported as changes:
+
+```bash
+jsondiff '{"x": 1, "y": 2}' '{"y": 2, "x": 1}'          # clean (normalized)
+jsondiff --no-normalize '{"x": 1, "y": 2}' '{"y": 2, "x": 1}'  # 1 difference
+```
+
+`--no-normalize` works with every other flag (`--compact`, `--stats`, `-q`).
 
 `--compact` prints a JSON array instead, for scripting or piping into other
 tools. Each record carries the path, change kind, and old/new values (type
