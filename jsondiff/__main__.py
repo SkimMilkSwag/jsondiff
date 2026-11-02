@@ -4,7 +4,14 @@ import json
 import sys
 from typing import Any, List, Optional
 
-from .diff import diff, format_report, format_json, format_stats, parse_ignore
+from .diff import (
+    diff,
+    format_report,
+    format_json,
+    format_stats,
+    parse_ignore,
+    parse_include,
+)
 
 
 class ParseError(Exception):
@@ -71,6 +78,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         "location)",
     )
     p.add_argument(
+        "--include",
+        metavar="KEYS",
+        help="comma-separated key names to RESTRICT the diff to (the inverse "
+        "of --ignore): only object members whose name or full JSON path is in "
+        "the list are compared; everything else is skipped. A bare name applies "
+        "at every level; a full path like '$.a.b' targets one location",
+    )
+    p.add_argument(
         "-s",
         "--stats",
         action="store_true",
@@ -111,7 +126,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"jsondiff: error parsing {e.where}: line {e.line}, column {e.column} — {e.msg}", file=sys.stderr)
         sys.exit(2)
     d = diff(a, b, key_field=args.key, ignore=parse_ignore(args.ignore),
-             normalize=not args.no_normalize)
+             include=parse_include(args.include), normalize=not args.no_normalize)
     if args.stats:
         print(format_stats(d))
     elif args.compact:

@@ -367,6 +367,139 @@ def test_cli_ignore_does_not_affect_stats_without_flag(capsys):
     assert "changed: 1" in out
 
 
+# --- --include (key-name allowlist, inverse of --ignore) ------------------
+
+def test_parse_include_basic():
+    from jsondiff.diff import parse_include
+
+    assert parse_include(None) is None
+    assert parse_include("") is None
+    assert parse_include("name") == frozenset({"name"})
+    assert parse_include("a,b,c") == frozenset({"a", "b", "c"})
+    # whitespace and empty segments are tolerated, same as --ignore
+    assert parse_include(" a ,, b ") == frozenset({"a", "b"})
+
+
+def test_include_restricts_to_named_keys():
+    a = {"name": "x", "version": 1, "build": 123, "cfg": {"build": 7, "keep": 1}}
+    b = {"name": "y", "version": 2, "build": 456, "cfg": {"build": 8, "keep": 2}}
+    # without include: every changed key is reported
+    full = diff(a, b)
+    assert len(full.changes) == 5
+    # with include="name": only $.name diffs; version/build/cfg.* are skipped
+    d = diff(a, b, include=frozenset({"name"}))
+    paths = {c[0] for c in d.changes}
+    assert paths == {"$.name"}
+
+
+def test_include_applies_at_every_level():
+    # a bare name in the allowlist matches at every nesting depth
+    a = {"outer": {"v": 1, "other": 2}, "inner": {"v": 3}}
+    b = {"outer": {"v": 9, "other": 5}, "inner": {"v": 7}}
+    d = diff(a, b, include=frozenset({"v"}))
+    paths = {c[0] for c in d.changes}
+    # both "v" members (outer.v and inner.v) are kept; "other" is skipped
+    assert paths == {"$.outer.v", "$.inner.v"}
+
+
+def test_include_handles_added_and_removed_keys():
+    a = {"keep": 1, "volatile": 9}
+    b = {"keep": 2, "other": 3}
+    # include only "keep": the change to keep is reported; volatile (removed)
+    # and other (added) are skipped because they're not in the allowlist
+    d = diff(a, b, include=frozenset({"keep"}))
+    paths = {c[0] for c in d.changes}
+    assert paths == {"$.keep"}
+    assert all(c[1] == "changed" for c in d.changes)
+
+
+def test_include_dotted_name_targets_one_path_only():
+    # a full JSON path in the allowlist matches only that location, not other
+    # members with the same bare name elsewhere
+    a = {"build": 1, "cfg": {"build": 2}, "deep": {"build": 3}}
+    b = {"build": 5, "cfg": {"build": 9}, "deep": {"build": 7}}
+    d = diff(a, b, include=frozenset({"$.cfg.build"}))
+    paths = {c[0] for c in d.changes}
+    # only cfg.build is kept; the top-level build and deep.build are skipped
+    assert paths == {"$.cfg.build"}
+
+
+def test_include_and_ignore_combine():
+    # a member must pass BOTH: be in the include allowlist AND not be ignored
+    a = {"name": "x", "build": 1, "other": 2}
+    b = {"name": "y", "build": 9, "other": 8}
+    d = diff(a, b, include=frozenset({"name", "build"}), ignore=frozenset({"build"}))
+    paths = {c[0] for c in d.changes}
+    # name is included and not ignored -> reported; build is included but
+    # ignored -> skipped; other is not included -> skipped
+    assert paths == {"$.name"}
+
+
+def test_include_does_not_prune_array_elements():
+    # the allowlist is a leaf filter: it gates *reporting* of changes, but we
+    # still descend through containers to find matching leaves. Listing a bare
+    # key covers its whole element list; listing the inner leaf name reports it.
+    a = {"tags": [1, 2, 3], "meta": {"v": 1}}
+    b = {"tags": [1, 4], "meta": {"v": 9}}
+    # "tags" (covers its element list) + "v" (the inner leaf) are both allowed
+    d = diff(a, b, include=frozenset({"tags", "v"}))
+    paths = {c[0] for c in d.changes}
+    assert "$.tags[1]" in paths and "$.tags[2]" in paths and "$.meta.v" in paths
+
+
+def test_include_container_key_covers_element_list():
+    # a bare key in the allowlist covers its entire array: element changes are
+    # reported even though the elements aren't individually listed
+    a = {"tags": [1, 2]}
+    b = {"tags": [1, 9]}
+    d = diff(a, b, include=frozenset({"tags"}))
+    assert {c[0] for c in d.changes} == {"$.tags[1]"}
+
+
+def test_include_normalizes_pruned_differences():
+    # a difference confined to a pruned member must NOT force a diff when the
+    # included members are semantically equal (the _project fast path)
+    a = {"keep": 1, "skip": {"x": 1}}
+    b = {"keep": 1, "skip": {"x": 99}}
+    d = diff(a, b, include=frozenset({"keep"}))
+    assert d.changes == []
+
+
+def test_cli_include_flag(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"b":2}', '{"a":9,"b":3}', "--include", "a", "--compact"])
+    assert exc.value.code == 0
+    recs = json.loads(capsys.readouterr().out)
+    # only the included key is reported
+    assert [r["path"] for r in recs] == ["$.a"]
+
+
+def test_cli_include_comma_list_and_q(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"b":2,"c":3}', '{"a":9,"b":5,"c":7}', "--include", "a,c", "-q", "-c"])
+    # both a and c change -> -q flips the exit code to 1
+    assert exc.value.code == 1
+    recs = json.loads(capsys.readouterr().out)
+    assert sorted(r["path"] for r in recs) == ["$.a", "$.c"]
+
+
+def test_cli_include_clean_exit_zero_with_q(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"b":2}', '{"a":1,"b":9}', "--include", "a", "-q", "-c"])
+    # only b differs but b is not included -> clean -> exit 0 with -q
+    assert exc.value.code == 0
+    assert json.loads(capsys.readouterr().out) == []
+
+
 # --- malformed-input parse errors (line/column) ----------------------------
 
 def test_parse_error_file_reports_line_and_column(tmp_path, capsys):

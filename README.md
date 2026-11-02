@@ -34,6 +34,10 @@ jsondiff --stats old.json new.json
 # Diff arrays of objects by a key field instead of position
 jsondiff --key id old.json new.json
 
+# Restrict the diff to specific keys (inverse of --ignore); a bare name
+# matches at every level, a full path like '$.a.b' targets one location
+jsondiff --include name,version old.json new.json
+
 # Strict comparison: dict key order and int/float form (1 vs 1.0) are diffs
 jsondiff --no-normalize old.json new.json
 ```
@@ -124,6 +128,31 @@ jsondiff --key id old.json new.json
 Added/removed elements are reported with their key value in the path; pure
 reordering produces no differences. Arrays without the field (or non-object
 arrays) still fall back to positional comparison.
+
+### Restricting the diff to specific keys (`--include`)
+
+`--ignore` suppresses listed keys; `--include` is its inverse — a *leaf*
+allowlist that reports only changes to object members whose name (or full JSON
+path) is listed, skipping everything else. It's for narrowing a large document
+down to one or two fields of interest:
+
+```bash
+jsondiff --include name,version old.json new.json
+```
+
+A bare name (`name`) matches that key at **every** nesting depth and also covers
+a whole array element list (so `--include tags` reports every `tags[i]`
+change). A full JSON path (`$.cfg.build`) targets one specific location only.
+We still *descend* through non-matching containers, so a deeper listed key is
+found — the allowlist gates which changes are **reported**, not which nodes we
+walk. `--ignore` and `--include` combine: a member must be in the include set
+**and** not ignored. In the library: `diff(a, b, include=frozenset({...}))`.
+
+```bash
+# only $.name is reported; build/other are skipped
+jsondiff --include name '{"a":1,"b":2}' '{"a":9,"b":3}'   # [] (a not listed)
+jsondiff --include a,b   '{"a":1,"b":2}' '{"a":9,"b":3}'  # $.a + $.b changed
+```
 
 ## CI (GitHub Actions)
 

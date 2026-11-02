@@ -66,6 +66,22 @@ def parse_ignore(raw: Optional[str]) -> Optional[frozenset]:
     return frozenset(keys) or None
 
 
+def parse_include(raw: Optional[str]) -> Optional[frozenset]:
+    """Parse a ``--include key1,key2`` argument into a frozenset of keys.
+
+    The inverse of :func:`parse_ignore`: only object members whose name (or
+    full JSON path) appears in the set are diffed — every other member is
+    skipped as if it didn't exist on either side. Returns None when ``raw`` is
+    None/empty (no restriction, i.e. diff everything). Whitespace handling and
+    empty-segment dropping are identical to ``parse_ignore`` so the two flags
+    behave symmetrically: ``"a,, b "`` parses to ``frozenset({"a", "b"})``.
+    """
+    if not raw:
+        return None
+    keys = {k.strip() for k in raw.split(",") if k.strip()}
+    return frozenset(keys) or None
+
+
 class Diff:
     """Holds a flat list of change records."""
 
@@ -100,6 +116,19 @@ class Diff:
         """
         if not _json_equal(old, new):
             self.changes.append(Change(path, kind, old, new))
+
+
+def _project(obj: Any, keys: List[str]) -> Dict[Any, Any]:
+    """Project a dict down to only ``keys`` (missing keys are dropped).
+
+    Used by the include/ignore pruning so that the fast-path semantic
+    equality check compares the *kept* sub-objects rather than the full
+    documents — otherwise a difference confined to a pruned member would
+    defeat the ``_json_equal`` early-exit and force a full re-diff.
+    """
+    if not isinstance(obj, dict):
+        return obj
+    return {k: obj[k] for k in keys if k in obj}
 
 
 def _keyed_pairs(
@@ -144,6 +173,7 @@ def diff(
     path: str = "$",
     key_field: Optional[str] = None,
     ignore: Optional[frozenset] = None,
+    include: Optional[frozenset] = None,
     normalize: bool = True,
 ) -> Diff:
     """Recursively compare two JSON values. Returns a Diff with all differences.
@@ -165,6 +195,15 @@ def diff(
     field wherever it occurs. To target one specific nested path instead,
     pass its full JSON path (e.g. ``--ignore "$.a.b"`` matches only the child
     ``b`` inside object ``a``, leaving any other ``b`` untouched).
+
+    When `include` is a frozenset (the inverse of `ignore`), ONLY object
+    members whose name or full JSON path appears in the set are diffed; every
+    other member is skipped as if it didn't exist on either side. This is
+    useful for narrowing a huge document down to one or two fields of interest
+    (``--include "name,version"``). `ignore` and `include` combine: a member
+    must pass the include allowlist AND not appear in the ignore set. When
+    `include` is set, arrays are still diffed element-by-element as normal —
+    the allowlist only prunes object members.
     """
     d = Diff()
 
@@ -176,36 +215,52 @@ def diff(
         # compute the union of keys once; for the root object with an ignore
         # set, filter out ignored names before diffing.
         all_keys = list(a.keys()) + [k for k in b.keys() if k not in a]
+        parent = "" if path == "$" else path + "."
         if ignore:
             # A bare name ("build") suppresses that key at every level; a
             # full path ("$.a.b") suppresses only the matching location.  The
             # candidate JSON path for each member is "parent + .k", so both
             # forms fall out of one membership test.
-            parent = "" if path == "$" else path + "."
             all_keys = [k for k in all_keys if (k not in ignore and (parent + k) not in ignore)]
         if normalize:
-            # semantic mode: same members, no value differences -> silent
-            if _json_equal(a, b):
+            # semantic mode: same members, no value differences -> silent.
+            # When ignore prunes the key set, compare only the kept sub-objects
+            # so a difference confined to a pruned member can't force a diff.
+            if _json_equal(_project(a, all_keys), _project(b, all_keys)):
                 return d
         else:
             # strict mode: key order is part of the document, so a reorder of
             # present keys is itself a change (reported before member diffs)
             if list(a.keys()) != list(b.keys()):
                 d._add(path, "changed", a, b)
+
+        def _included(k: str) -> bool:
+            # leaf filter: no include set means everything is reported; with
+            # one, only a member whose bare name OR full JSON path is listed
+            # produces a record (we still descend through non-matching members
+            # so a deeper listed key like "$.cfg.build" can be found).
+            if not include:
+                return True
+            return k in include or (parent + k) in include
+
         for k in all_keys:
             key = f"{path}.{k}"
             if k not in b:
-                d._add(key, "removed", a[k])
+                if _included(k):
+                    d._add(key, "removed", a[k])
             elif k not in a:
-                d._add(key, "added", new=b[k])
+                if _included(k):
+                    d._add(key, "added", new=b[k])
             else:
-                sub = diff(a[k], b[k], key, key_field, ignore, normalize)
+                sub = diff(a[k], b[k], key, key_field, ignore, include, normalize)
+                # keep the subtree's changes; the leaf filter already gates
+                # which member-level records are emitted at this depth
                 d.changes.extend(sub.changes)
     elif isinstance(a, list):
         if key_field is not None:
             added, removed, common = _keyed_pairs(a, b, key_field)
             for item in common:
-                sub = diff(item[0], item[1], f"{path}<{key_field}>", None, ignore, normalize)
+                sub = diff(item[0], item[1], f"{path}<{key_field}>", None, ignore, include, normalize)
                 d.changes.extend(sub.changes)
             for item in removed:
                 v = item[key_field] if isinstance(item, dict) and key_field in item else None
@@ -221,9 +276,24 @@ def diff(
                 elif i >= len(a):
                     d._add(item_path, "added", new=b[i])
                 else:
-                    sub = diff(a[i], b[i], item_path, key_field, ignore, normalize)
+                    sub = diff(a[i], b[i], item_path, key_field, ignore, include, normalize)
                     d.changes.extend(sub.changes)
     else:
+        # scalar leaf (or a node reached through an included member). The
+        # include allowlist is a *leaf* filter: a change at ``path`` is only
+        # reported when path's last segment or its full JSON form is listed.
+        # No include set -> always report.
+        if include:
+            seg = path.rsplit(".", 1)[-1] if "." in path else path
+            # array elements are addressed [i]; the containing key is the last
+            # dotted segment before the bracket (e.g. $.tags[2] -> tags), so a
+            # bare key in the allowlist covers its whole element list
+            if "[" in seg:
+                seg = seg.split("[", 1)[0]
+                base = seg.rsplit(".", 1)[-1] if "." in seg else seg
+                seg = base
+            if seg not in include and path not in include:
+                return d
         if normalize:
             d._add_normalized(path, "changed", a, b)
         elif repr(a) != repr(b):
