@@ -642,3 +642,103 @@ def test_cli_normalize_clean_by_default(capsys):
         main(["--compact", '{"x": 1, "y": 2}', '{"y": 2, "x": 1}'])
     out = capsys.readouterr().out
     assert __import__("json").loads(out) == []
+
+
+# --- --summary: per-top-level-key counts ------------------------------------
+
+def test_summary_counts_mixed_kinds():
+    from jsondiff.diff import diff, summary_counts
+
+    a = {"a": 1, "gone": 9, "cfg": {"x": 1}, "items": [1, 2]}
+    b = {"a": 2, "cfg": {"x": 2, "y": 3}, "items": [1, 3], "brand": 4}
+    d = diff(a, b)
+    rows = summary_counts(d)
+    assert set(rows) == {"a", "gone", "cfg", "items", "brand"}
+    assert rows["a"] == {"added": 0, "removed": 0, "changed": 1, "type": 0}
+    assert rows["gone"]["removed"] == 1
+    assert rows["cfg"]["changed"] == 1 and rows["cfg"]["added"] == 1
+    assert rows["items"]["changed"] == 1
+    assert rows["brand"]["added"] == 1
+
+
+def test_summary_counts_empty_diff():
+    from jsondiff.diff import diff, summary_counts
+
+    rows = summary_counts(diff({"a": 1}, {"a": 1}))
+    assert rows == {}
+
+
+def test_summary_counts_deep_path_rolls_to_top_key():
+    from jsondiff.diff import diff, summary_counts
+
+    a = {"svc": {"db": {"host": "x"}}}
+    b = {"svc": {"db": {"host": "y"}, "pool": 5}}
+    rows = summary_counts(diff(a, b))
+    # both deep changes roll up to the single top-level key 'svc'
+    assert list(rows) == ["svc"]
+    assert rows["svc"]["changed"] == 1 and rows["svc"]["added"] == 1
+
+
+def test_summary_counts_array_top_level():
+    from jsondiff.diff import diff, summary_counts
+
+    a = [[1, 2], [3]]
+    b = [[1, 9]]
+    rows = summary_counts(diff(a, b))
+    # top-level array members ($[0]/$[1]) roll up to the array itself:
+    # a single row whose index is the path's own top segment, "$"
+    assert list(rows) == ["$"]
+    assert rows["$"]["changed"] == 1 and rows["$"]["removed"] == 1
+
+
+def test_format_summary_table_shape():
+    from jsondiff.diff import diff, format_summary
+
+    d = diff({"a": 1, "gone": 9}, {"a": 2, "new": 3})
+    out = format_summary(d)
+    lines = out.splitlines()
+    # header + one row per top-level key + TOTAL line
+    assert lines[0].startswith("key")
+    assert len(lines) == 1 + 3 + 1
+    a_row = [l for l in lines if l.startswith("a ") or l.startswith("a\t")]
+    assert a_row and a_row[0].split()[-1] == "1"  # one change under 'a'
+
+
+def test_format_summary_empty():
+    from jsondiff.diff import diff, format_summary
+
+    assert format_summary(diff({"a": 1}, {"a": 1})) == "No differences."
+
+
+def test_cli_summary_flag(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"gone":9,"cfg":{"x":1}}', '{"a":2,"cfg":{"x":2},"new":3}', "--summary"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    lines = out.strip().splitlines()
+    assert lines[0].startswith("key")
+    assert "TOTAL" in out
+    # 'a' row: one changed, total 1; 'gone' row: one removed; 'new' row: one added
+    rows = {l.split()[0]: l for l in lines[1:]}
+    assert rows["a"].split()[-1] == "1"
+    assert rows["gone"].split()[-1] == "1"
+    assert rows["cfg"].split()[-1] == "1"
+    assert rows["new"].split()[-1] == "1"
+    # grand total line sums to 4
+    assert rows["TOTAL"].split()[-1] == "4"
+
+
+def test_cli_summary_takes_precedence(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit):
+        main(['{"a":1}', '{"a":2}', "--summary", "--stats", "--compact"])
+    out = capsys.readouterr().out.strip()
+    lines = out.splitlines()
+    # summary wins: table shape, not stats lines or a JSON array
+    assert lines[0].startswith("key") and "TOTAL" in out
+    assert not out.lstrip().startswith("[")

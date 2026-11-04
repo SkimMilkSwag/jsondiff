@@ -367,3 +367,67 @@ def format_stats(d: Diff) -> str:
     lines = [f"  {kind}: {counts[kind]}" for kind in ("added", "removed", "changed", "type")]
     lines.append(f"  total: {counts['total']}")
     return "\n".join(lines)
+
+
+def _top_segment(path: str) -> str:
+    """First top-level key of a JSON path like ``$.a.b`` or ``$.items[2].x``.
+
+    Returns the first dotted key after ``$`` (e.g. ``a``, ``items``). Array
+    brackets are dropped — a change deep in a top-level array rolls up to the
+    array's own name. A path with no leading ``$.`` (or an empty one) yields
+    the raw remainder, so nothing is silently dropped.
+    """
+    p = path
+    if p.startswith("$."):
+        p = p[2:]
+    return p.split(".", 1)[0].split("[", 1)[0] or path
+
+
+def summary_counts(d: Diff) -> Dict[str, Dict[str, int]]:
+    """Count changes per top-level key, grouped by kind.
+
+    For every change, the first top-level segment of its path (see
+    :func:`_top_segment`) is used as the row key. The result maps each row to
+    a zero-filled ``{added, removed, changed, type}`` counter; rows appear in
+    the order their first change is encountered, which follows diff output
+    order and is stable for identical inputs. A change whose path does not
+    start with ``$`` (shouldn't happen for a well-formed Diff) lands under
+    that raw path so nothing is silently dropped.
+    """
+    order = ["added", "removed", "changed", "type"]
+    rows: Dict[str, Dict[str, int]] = {}
+    for path, kind, _, _ in d.changes:
+        seg = _top_segment(path)
+        if seg not in rows:
+            rows[seg] = {k: 0 for k in order}
+        rows[seg][kind] += 1
+    return rows
+
+
+def format_summary(d: Diff) -> str:
+    """Render a per-top-level-key change table, e.g. ``--summary`` output.
+
+    One line per top-level key with added/removed/changed/type counts and a
+    per-key total, followed by a grand total over all keys. Useful for CI
+    triage of large documents: it answers *which* sections moved, not the
+    individual change list. A clean diff prints ``No differences.``.
+    """
+    if not d.changes:
+        return "No differences."
+    rows = summary_counts(d)
+    lines = ["key                     added  removed  changed  type   total"]
+    grand = {k: 0 for k in ("added", "removed", "changed", "type")}
+    for seg, counts in rows.items():
+        total = sum(counts.values())
+        for k in grand:
+            grand[k] += counts[k]
+        lines.append(
+            f"{seg:<23} {counts['added']:<8} {counts['removed']:<9} "
+            f"{counts['changed']:<9} {counts['type']:<7} {total}"
+        )
+    grand_total = sum(grand.values())
+    lines.append(
+        f"{'TOTAL':<23} {grand['added']:<8} {grand['removed']:<9} "
+        f"{grand['changed']:<9} {grand['type']:<7} {grand_total}"
+    )
+    return "\n".join(lines)

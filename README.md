@@ -107,6 +107,26 @@ dashboards or CI gates that care about *how much* changed rather than *what*:
 All four kinds are always shown (zero-filled), plus a `total`. `--stats` takes
 precedence over `--compact` if both are given.
 
+### Per-key summary (`--summary`)
+
+For large documents, `--summary` answers *which* top-level sections changed
+rather than listing every change: one row per top-level key with its
+added/removed/changed/type counts and a total, plus a grand-total line:
+
+```
+key                     added  removed  changed  type   total
+a                       0        0         1         0       1
+gone                    0        1         0         0       1
+cfg                     0        0         1         0       1
+new                     1        0         0         0       1
+TOTAL                   1        1         2         0       4
+```
+
+Changes are attributed to the first top-level key in their path (array
+brackets roll up to the array's own name), so a deep change under `$.svc.db`
+counts against `svc`. A clean diff prints `No differences.`. `--summary`
+takes precedence over `--stats` and `--compact` if more than one is given.
+
 ### Keyed array diffing (`--key`)
 
 By default arrays are compared positionally, so reordering or inserting an

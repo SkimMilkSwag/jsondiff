@@ -9,6 +9,7 @@ from .diff import (
     format_report,
     format_json,
     format_stats,
+    format_summary,
     parse_ignore,
     parse_include,
 )
@@ -92,6 +93,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="print a change-count summary (added/removed/changed/type + total)",
     )
     p.add_argument(
+        "--summary",
+        action="store_true",
+        help="print a per-top-level-key table of added/removed/changed/type "
+             "counts for quick CI triage (takes precedence over --stats/--compact)",
+    )
+    p.add_argument(
         "-N",
         "--no-normalize",
         action="store_true",
@@ -127,7 +134,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         sys.exit(2)
     d = diff(a, b, key_field=args.key, ignore=parse_ignore(args.ignore),
              include=parse_include(args.include), normalize=not args.no_normalize)
-    if args.stats:
+    if args.summary:
+        print(format_summary(d))
+    elif args.stats:
         print(format_stats(d))
     elif args.compact:
         print(format_json(d))
