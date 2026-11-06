@@ -2,7 +2,7 @@
 import argparse
 import json
 import sys
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from .diff import (
     diff,
@@ -41,6 +41,42 @@ def _load(src: str) -> Any:
         raise ParseError(src, e) from None
 
 
+def _leaf_filter(include: Optional[frozenset[str]], include_wild: Optional[frozenset[str]] = None) -> Optional[Callable[[str], bool]]:
+    """Build the leaf-reporting filter for an ``--include`` set.
+
+    A change at ``path`` is reported when its last dotted segment (array
+    brackets stripped — ``$.tags[2]`` -> ``tags``, so a bare key covers its
+    whole element list) or the full path appears in ``include``, or an
+    include wildcard pattern claims it (same location-scoped semantics as
+    object-member claiming: ``"$.a.*"`` reaches array elements under ``a``'s
+    claimed members). Returns None when neither half of the include set is
+    set, meaning report everything.
+    """
+
+    def _filter(path: str) -> bool:
+        seg = path.rsplit(".", 1)[-1] if "." in path else path
+        if "[" in seg:
+            seg = seg.split("[", 1)[0]
+            base = seg.rsplit(".", 1)[-1] if "." in seg else seg
+            seg = base
+        if include and (seg in include or path in include):
+            return True
+        if include_wild is not None:
+            # same location check as _member_matches: a pattern claims a
+            # member when its location equals the object containing that
+            # member — the path up to (not including) the last dot, with any
+            # array-index suffix ("items[3]") stripped off.
+            parent = path.rsplit(".", 1)[0] if "." in path else "$"
+            if "[" in parent:
+                parent = parent.split("[", 1)[0]
+            from .diff import _member_matches
+            if _member_matches(include_wild, seg, parent):
+                return True
+        return False
+
+    return _filter if (include or include_wild) else None
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     p = argparse.ArgumentParser(
         prog="jsondiff",
@@ -76,7 +112,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         metavar="KEYS",
         help="comma-separated key names to skip in the diff (applies at "
         "every nesting level; a full JSON path like '$.a.b' targets only that "
-        "location)",
+        "location; a trailing '*' like '$.a.*' matches every member of object "
+        "'a' at that location)",
     )
     p.add_argument(
         "--include",
@@ -84,7 +121,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="comma-separated key names to RESTRICT the diff to (the inverse "
         "of --ignore): only object members whose name or full JSON path is in "
         "the list are compared; everything else is skipped. A bare name applies "
-        "at every level; a full path like '$.a.b' targets one location",
+        "at every level; a full path like '$.a.b' targets one location; a "
+        "trailing '*' like '$.a.*' matches every member of object 'a'",
     )
     p.add_argument(
         "-s",
@@ -132,8 +170,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     except ParseError as e:
         print(f"jsondiff: error parsing {e.where}: line {e.line}, column {e.column} — {e.msg}", file=sys.stderr)
         sys.exit(2)
-    d = diff(a, b, key_field=args.key, ignore=parse_ignore(args.ignore),
-             include=parse_include(args.include), normalize=not args.no_normalize)
+    inc_exact, inc_wild = parse_include(args.include)
+    d = diff(
+        a, b, key_field=args.key,
+        ignore=parse_ignore(args.ignore)[0], ignore_wild=parse_ignore(args.ignore)[1],
+        include=inc_exact, include_leaf=_leaf_filter(inc_exact, inc_wild), include_wild=inc_wild,
+        normalize=not args.no_normalize,
+    )
     if args.summary:
         print(format_summary(d))
     elif args.stats:

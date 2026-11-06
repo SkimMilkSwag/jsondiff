@@ -174,6 +174,23 @@ jsondiff --include name '{"a":1,"b":2}' '{"a":9,"b":3}'   # [] (a not listed)
 jsondiff --include a,b   '{"a":1,"b":2}' '{"a":9,"b":3}'  # $.a + $.b changed
 ```
 
+### Wildcard patterns (`*.key` / `$.a.*`)
+
+Both flags accept patterns whose last segment is `*`, which claims **every
+member of the object at that location** (one level deep — nested children are
+not reached, and a pattern whose last segment isn't `*` stays a literal path):
+
+```bash
+# every member of $.cfg is suppressed; $.build elsewhere still diffs
+jsondiff --ignore '$.cfg.*' old.json new.json
+
+# report only the members of $.server and the top-level name
+jsondiff --include '$.server.*,name' old.json new.json
+```
+
+In the library the patterns arrive as the second element of the tuples
+`parse_ignore()` / `parse_include()` return: `diff(a, b, ignore_wild=frozenset({"$.cfg.*"}))`.
+
 ## CI (GitHub Actions)
 
 `--fail-on-change` makes the tool CI-friendly: exit code 0 when the two JSON

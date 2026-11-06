@@ -1,6 +1,6 @@
 """Core diffing logic for jsondiff."""
 import json
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 
 class Change(NamedTuple):
@@ -49,37 +49,47 @@ def _json_equal(a: Any, b: Any) -> bool:
         if len(a) != len(b):
             return False
         return all(_json_equal(x, y) for x, y in zip(a, b))
-    return a == b
+    return a == b  # type: ignore[no-any-return]
 
 
-def parse_ignore(raw: Optional[str]) -> Optional[frozenset]:
-    """Parse a ``--ignore key1,key2`` argument into a frozenset of keys.
+def parse_ignore(raw: Optional[str]) -> Tuple[Optional[frozenset[str]], Optional[frozenset[str]]]:
+    """Parse a ``--ignore key1,key2`` argument into (exact_keys, wildcards).
 
-    Returns None when ``raw`` is None/empty (no ignoring), so callers can
-    keep the fast path without checking membership against an empty set.
-    Whitespace around each key is stripped; empty segments are dropped, so
-    ``"a,, b "`` parses to ``frozenset({"a", "b"})``.
+    ``exact_keys`` holds bare names and literal full JSON paths — the original
+    contract: a bare name (``"build"``) suppresses that key at every level and
+    a full path (``"$.a.b"``) suppresses one location. ``wildcards`` holds
+    patterns whose last segment is ``*`` (e.g. ``"$.a.*"``) which match any
+    member of that object. Returns ``(None, None)`` when ``raw`` is None/empty
+    (no ignoring), so callers keep the fast path. Whitespace around each key is
+    stripped; empty segments are dropped, so ``"a,, b "`` parses to
+    ``(frozenset({"a", "b"}), None)``.
     """
     if not raw:
-        return None
+        return None, None
     keys = {k.strip() for k in raw.split(",") if k.strip()}
-    return frozenset(keys) or None
+    exact = frozenset(k for k in keys if "*" not in k) or None
+    wild = frozenset(k for k in keys if "*" in k) or None
+    return exact, wild
 
 
-def parse_include(raw: Optional[str]) -> Optional[frozenset]:
-    """Parse a ``--include key1,key2`` argument into a frozenset of keys.
+def parse_include(raw: Optional[str]) -> Tuple[Optional[frozenset[str]], Optional[frozenset[str]]]:
+    """Parse a ``--include key1,key2`` argument into (exact_keys, wildcards).
 
-    The inverse of :func:`parse_ignore`: only object members whose name (or
-    full JSON path) appears in the set are diffed — every other member is
-    skipped as if it didn't exist on either side. Returns None when ``raw`` is
+    The inverse of :func:`parse_ignore`: only object members claimed by an
+    exact name/path or a wildcard pattern are diffed — everything else is
+    skipped as if it didn't exist on either side. Wildcard patterns use the
+    same ``$.a.*`` form as ignore. Returns ``(None, None)`` when ``raw`` is
     None/empty (no restriction, i.e. diff everything). Whitespace handling and
     empty-segment dropping are identical to ``parse_ignore`` so the two flags
-    behave symmetrically: ``"a,, b "`` parses to ``frozenset({"a", "b"})``.
+    behave symmetrically: ``"a,, b "`` parses to
+    ``(frozenset({"a", "b"}), None)``.
     """
     if not raw:
-        return None
+        return None, None
     keys = {k.strip() for k in raw.split(",") if k.strip()}
-    return frozenset(keys) or None
+    exact = frozenset(k for k in keys if "*" not in k) or None
+    wild = frozenset(k for k in keys if "*" in k) or None
+    return exact, wild
 
 
 class Diff:
@@ -118,6 +128,29 @@ class Diff:
             self.changes.append(Change(path, kind, old, new))
 
 
+def _member_matches(wildcards: frozenset[str], name: str, path: str) -> bool:
+    """True when a member of the object located at ``path`` is claimed by a
+    wildcard pattern.
+
+    A pattern is a full JSON path whose LAST segment is the wildcard ``*``
+    (e.g. ``$.a.*`` or ``$.items[1].meta.*``): it claims every direct member of
+    the object at that location, and nothing deeper — ``$.a.*`` does not reach
+    ``$.a.b.c``. Patterns whose last segment is not exactly ``*`` are literal
+    paths and never match here (the caller's exact-name test handles those).
+    """
+    for pat in wildcards:
+        # the final segment of a JSON path is everything after its last ".";
+        # a pattern qualifies only when that segment is exactly "*"
+        if pat.rpartition(".")[2] != "*":
+            continue
+        # location prefix: drop the trailing ".<star>" — "$.cfg.*" -> "$.cfg",
+        # "$.items[0].meta.*" -> "$.items[0].meta" (brackets are part of it)
+        loc = pat[: -len(".*")]
+        if path == loc:
+            return True
+    return False
+
+
 def _project(obj: Any, keys: List[str]) -> Dict[Any, Any]:
     """Project a dict down to only ``keys`` (missing keys are dropped).
 
@@ -127,8 +160,20 @@ def _project(obj: Any, keys: List[str]) -> Dict[Any, Any]:
     defeat the ``_json_equal`` early-exit and force a full re-diff.
     """
     if not isinstance(obj, dict):
-        return obj
+        return obj  # type: ignore[no-any-return]
     return {k: obj[k] for k in keys if k in obj}
+
+
+def _prune_dict(obj: Any, keep: Callable[[str], bool]) -> Any:
+    """Project a dict down to the members ``keep(name)`` accepts.
+
+    The include/wildcard version of :func:`_project`: same purpose (make the
+    fast-path ``_json_equal`` compare only kept members), but the member test
+    is a predicate so wildcard patterns can be applied per location.
+    """
+    if not isinstance(obj, dict):
+        return obj
+    return {k: v for k, v in obj.items() if keep(k)}
 
 
 def _keyed_pairs(
@@ -172,8 +217,11 @@ def diff(
     b: Any,
     path: str = "$",
     key_field: Optional[str] = None,
-    ignore: Optional[frozenset] = None,
-    include: Optional[frozenset] = None,
+    ignore: Optional[frozenset[str]] = None,
+    ignore_wild: Optional[frozenset[str]] = None,
+    include: Optional[frozenset[str]] = None,
+    include_leaf: Optional[Callable[[str], bool]] = None,
+    include_wild: Optional[frozenset[str]] = None,
     normalize: bool = True,
 ) -> Diff:
     """Recursively compare two JSON values. Returns a Diff with all differences.
@@ -196,6 +244,13 @@ def diff(
     pass its full JSON path (e.g. ``--ignore "$.a.b"`` matches only the child
     ``b`` inside object ``a``, leaving any other ``b`` untouched).
 
+    Wildcard patterns in `ignore` / `include` (via ``ignore_wild`` /
+    ``include_wild``, the second half of :func:`parse_ignore` /
+    :func:`parse_include`) extend this: a pattern like ``"$.a.*"`` claims every
+    member of object ``a`` at that location. The star matches exactly one
+    member name — ``"$.a.*"`` does not reach into ``a``'s nested children, and
+    patterns with an un-starred last segment are treated as literal paths.
+
     When `include` is a frozenset (the inverse of `ignore`), ONLY object
     members whose name or full JSON path appears in the set are diffed; every
     other member is skipped as if it didn't exist on either side. This is
@@ -215,52 +270,144 @@ def diff(
         # compute the union of keys once; for the root object with an ignore
         # set, filter out ignored names before diffing.
         all_keys = list(a.keys()) + [k for k in b.keys() if k not in a]
+        # prefix that turns a member name into its full JSON path. At the root
+        # "$" it is "" (a root member's candidate path is just "<name>", which
+        # matches bare-name entries in the ignore set); deeper down it is this
+        # object's own path + ".".
         parent = "" if path == "$" else path + "."
-        if ignore:
-            # A bare name ("build") suppresses that key at every level; a
-            # full path ("$.a.b") suppresses only the matching location.  The
-            # candidate JSON path for each member is "parent + .k", so both
-            # forms fall out of one membership test.
-            all_keys = [k for k in all_keys if (k not in ignore and (parent + k) not in ignore)]
-        if normalize:
-            # semantic mode: same members, no value differences -> silent.
-            # When ignore prunes the key set, compare only the kept sub-objects
-            # so a difference confined to a pruned member can't force a diff.
-            if _json_equal(_project(a, all_keys), _project(b, all_keys)):
+
+        # Precompute whether this object has any add/remove members (structural
+        # change). Used by the ignore-wildcard rule below: when a wildcard
+        # claims all members of a structurally-changed object, value changes
+        # to claimed members are still reported.
+        _has_structural = any(k not in b for k in a) or any(k not in a for k in b)
+
+        def _member_kept(k: str) -> bool:
+            """Whether member ``k`` at ``parent+k`` survives ignore/include.
+
+            ignore wins over include (the documented combination rule): a
+            member is dropped when its exact name/path is in the ignore set or
+            a wildcard claims it; otherwise, when an include set exists, it is
+            kept if its bare name appears at this level (the documented
+            every-depth behaviour of --include), its full JSON path is listed,
+            or an include wildcard claims it. Wildcards are location-scoped —
+            see :func:`_member_matches`.
+
+            For *descent* purposes (members present on both sides), the
+            include allowlist does NOT block the walk: we still descend
+            through unclaimed containers so a deeper listed key like
+            ``"$.cfg.build"`` can be found. The include filter gates only
+            added/removed record emission at this level and, at the scalar
+            leaf, whether the change is reported (via ``include_leaf``).
+            """
+            full = parent + k
+            # ignore wins over include: an ignored member is dropped entirely
+            # (no descent, no record) before the include allowlist can see it.
+            if ignore is not None and (k in ignore or full in ignore):
+                return False
+            if ignore_wild is not None:
+                # _member_matches claims a member when a wildcard's location
+                # equals this object's own path — "$.cfg.*" drops every child
+                # of $.cfg (and nothing deeper: it never reaches
+                # $.cfg.nested.x). See :func:`_member_matches`.
+                if _member_matches(ignore_wild, k, path):
+                    # Wildcard-claimed member: suppressed for add/remove
+                    # records always. For value changes (present on both
+                    # sides), suppressed UNLESS the object also has
+                    # structural changes (add/remove siblings) — in that case
+                    # the caller wants to know what else moved.
+                    if k in a and k in b:
+                        return _has_structural
+                    return False
+            # No include set: everything survives.
+            if include is None and include_wild is None:
+                return True
+            # Include allowlist active: a member is *claimed* when its bare
+            # name, full path, or a wildcard pattern matches. Claimed members
+            # are always kept; unclaimed members present on both sides are
+            # also kept so the walk descends through them (a deeper listed key
+            # like ``"$.cfg.build"`` must be reachable). The caller gates
+            # added/removed emission via :func:`_member_claimed`.
+            if (include is not None and (k in include or full in include)):
+                return True
+            if include_wild is not None and _member_matches(include_wild, k, path):
+                return True
+            # unclaimed: keep for descent if present on both sides
+            return k in a and k in b
+
+        def _member_claimed(k: str) -> bool:
+            """Whether member ``k`` is claimed by the include allowlist.
+
+            Used to gate added/removed record emission: an unclaimed member
+            that appears on only one side is skipped (no record), but we
+            still descended through it when present on both sides.
+            """
+            if include is None and include_wild is None:
+                return True
+            full = parent + k
+            return (
+                (include is not None and (k in include or full in include))
+                or (include_wild is not None and _member_matches(include_wild, k, path))
+            )
+
+        # fast-path comparison must see exactly the members the walk below
+        # would report: pruned (ignored) members are dropped on both sides.
+        # The include allowlist is NOT applied here — it gates leaf reporting
+        # via descent, so pruning a non-claimed container (e.g. "outer" when
+        # only "v" is claimed) would swallow the claimed leaves inside it.
+        # When wildcard patterns are in play, per-member suppression is
+        # location-dependent and the walk's scalar-level reporting (value
+        # changes to claimed members that exist on both sides) can't be
+        # predicted by a simple prune-and-compare, so skip the shortcut.
+        has_wild = ignore_wild is not None or include_wild is not None
+        if normalize and not has_wild:
+            # semantic mode: same kept members, no value differences -> silent.
+            def _fast_kept(k: str) -> bool:
+                full = parent + k
+                if ignore is not None and (k in ignore or full in ignore):
+                    return False
+                if ignore_wild is not None and _member_matches(ignore_wild, k, path):
+                    return False
+                return True
+
+            if _json_equal(_prune_dict(a, _fast_kept), _prune_dict(b, _fast_kept)):
                 return d
-        else:
+        elif not normalize:
             # strict mode: key order is part of the document, so a reorder of
-            # present keys is itself a change (reported before member diffs)
+            # present keys is itself a change (reported before member diffs).
             if list(a.keys()) != list(b.keys()):
                 d._add(path, "changed", a, b)
 
-        def _included(k: str) -> bool:
-            # leaf filter: no include set means everything is reported; with
-            # one, only a member whose bare name OR full JSON path is listed
-            # produces a record (we still descend through non-matching members
-            # so a deeper listed key like "$.cfg.build" can be found).
-            if not include:
-                return True
-            return k in include or (parent + k) in include
-
         for k in all_keys:
             key = f"{path}.{k}"
+            # ignore gates the walk entirely; include gates record emission
+            # (added/removed) but not descent through present-on-both-sides
+            # containers, so a deeper claimed key can still be found.
+            if not _member_kept(k):
+                continue
             if k not in b:
-                if _included(k):
+                # removed: emit only when the member is claimed by include;
+                # ignore-wildcard-claimed members are always suppressed.
+                if _member_claimed(k):
                     d._add(key, "removed", a[k])
             elif k not in a:
-                if _included(k):
+                # added: same claim gate
+                if _member_claimed(k):
                     d._add(key, "added", new=b[k])
             else:
-                sub = diff(a[k], b[k], key, key_field, ignore, include, normalize)
-                # keep the subtree's changes; the leaf filter already gates
-                # which member-level records are emitted at this depth
+                sub = diff(
+                    a[k], b[k], key, key_field,
+                    ignore, ignore_wild, include, include_leaf, include_wild, normalize,
+                )
                 d.changes.extend(sub.changes)
     elif isinstance(a, list):
         if key_field is not None:
             added, removed, common = _keyed_pairs(a, b, key_field)
             for item in common:
-                sub = diff(item[0], item[1], f"{path}<{key_field}>", None, ignore, include, normalize)
+                sub = diff(
+                    item[0], item[1], f"{path}<{key_field}>", None,
+                    ignore, ignore_wild, include, include_leaf, include_wild, normalize,
+                )
                 d.changes.extend(sub.changes)
             for item in removed:
                 v = item[key_field] if isinstance(item, dict) and key_field in item else None
@@ -276,23 +423,33 @@ def diff(
                 elif i >= len(a):
                     d._add(item_path, "added", new=b[i])
                 else:
-                    sub = diff(a[i], b[i], item_path, key_field, ignore, include, normalize)
+                    sub = diff(
+                        a[i], b[i], item_path, key_field,
+                        ignore, ignore_wild, include, include_leaf, include_wild, normalize,
+                    )
                     d.changes.extend(sub.changes)
     else:
-        # scalar leaf (or a node reached through an included member). The
-        # include allowlist is a *leaf* filter: a change at ``path`` is only
-        # reported when path's last segment or its full JSON form is listed.
-        # No include set -> always report.
-        if include:
+        # scalar leaf (or a node reached through an included member). When an
+        # include allowlist is active, a change at ``path`` is only reported if
+        # it is claimed by the allowlist. The CLI passes a pre-built
+        # ``include_leaf`` filter; library callers that set ``include`` but not
+        # ``include_leaf`` get the same filtering applied inline (bare-name
+        # matching at every depth, full-path matching, and the documented
+        # bare-key-covers-its-element-list behaviour for array elements).
+        if include_leaf is not None:
+            if not include_leaf(path):
+                return d
+        elif include is not None or include_wild is not None:
             seg = path.rsplit(".", 1)[-1] if "." in path else path
-            # array elements are addressed [i]; the containing key is the last
-            # dotted segment before the bracket (e.g. $.tags[2] -> tags), so a
-            # bare key in the allowlist covers its whole element list
             if "[" in seg:
                 seg = seg.split("[", 1)[0]
                 base = seg.rsplit(".", 1)[-1] if "." in seg else seg
                 seg = base
-            if seg not in include and path not in include:
+            claimed = (
+                (include is not None and (seg in include or path in include))
+                or (include_wild is not None and _member_matches(include_wild, seg, path.rsplit(".", 1)[0] if "." in path else "$"))
+            )
+            if not claimed:
                 return d
         if normalize:
             d._add_normalized(path, "changed", a, b)

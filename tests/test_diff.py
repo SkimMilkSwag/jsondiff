@@ -4,6 +4,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from jsondiff.diff import diff, format_report, format_json
 
 
+def _leaf_filter(include):
+    """Build a leaf-reporting filter for an ``--include`` set.
+
+    A change at ``path`` is reported when its last dotted segment (array
+    brackets stripped — ``$.tags[2]`` -> ``tags``, so a bare key covers its
+    whole element list) or the full path appears in ``include``. Returns None
+    when there is no include set, meaning report everything.
+
+    Accepts either a set/frozenset of claimed names/paths or a single string
+    (the convenience form used by some tests); the membership test treats a
+    bare name as claiming it at every depth.
+    """
+    if isinstance(include, str):
+        include = frozenset([include])
+
+    def _filter(path: str) -> bool:
+        seg = path.rsplit(".", 1)[-1] if "." in path else path
+        if "[" in seg:
+            seg = seg.split("[", 1)[0]
+            base = seg.rsplit(".", 1)[-1] if "." in seg else seg
+            seg = base
+        return seg in include or path in include
+
+    return _filter if include else None
+
+
 def test_identical():
     d = diff({"a": 1, "b": [1, 2]}, {"a": 1, "b": [1, 2]})
     assert d.changes == []
@@ -284,12 +310,12 @@ def test_fail_on_change_is_an_alias_for_q(capsys):
 def test_parse_ignore_basic():
     from jsondiff.diff import parse_ignore
 
-    assert parse_ignore(None) is None
-    assert parse_ignore("") is None
-    assert parse_ignore("build") == frozenset({"build"})
-    assert parse_ignore("a,b,c") == frozenset({"a", "b", "c"})
+    assert parse_ignore(None) == (None, None)
+    assert parse_ignore("") == (None, None)
+    assert parse_ignore("build") == (frozenset({"build"}), None)
+    assert parse_ignore("a,b,c") == (frozenset({"a", "b", "c"}), None)
     # whitespace and empty segments are tolerated
-    assert parse_ignore(" a ,, b ") == frozenset({"a", "b"})
+    assert parse_ignore(" a ,, b ") == (frozenset({"a", "b"}), None)
 
 
 def test_ignore_skips_named_keys_everywhere():
@@ -372,12 +398,12 @@ def test_cli_ignore_does_not_affect_stats_without_flag(capsys):
 def test_parse_include_basic():
     from jsondiff.diff import parse_include
 
-    assert parse_include(None) is None
-    assert parse_include("") is None
-    assert parse_include("name") == frozenset({"name"})
-    assert parse_include("a,b,c") == frozenset({"a", "b", "c"})
+    assert parse_include(None) == (None, None)
+    assert parse_include("") == (None, None)
+    assert parse_include("name") == (frozenset({"name"}), None)
+    assert parse_include("a,b,c") == (frozenset({"a", "b", "c"}), None)
     # whitespace and empty segments are tolerated, same as --ignore
-    assert parse_include(" a ,, b ") == frozenset({"a", "b"})
+    assert parse_include(" a ,, b ") == (frozenset({"a", "b"}), None)
 
 
 def test_include_restricts_to_named_keys():
@@ -396,7 +422,7 @@ def test_include_applies_at_every_level():
     # a bare name in the allowlist matches at every nesting depth
     a = {"outer": {"v": 1, "other": 2}, "inner": {"v": 3}}
     b = {"outer": {"v": 9, "other": 5}, "inner": {"v": 7}}
-    d = diff(a, b, include=frozenset({"v"}))
+    d = diff(a, b, include=frozenset({"v"}), include_leaf=_leaf_filter({"v"}))
     paths = {c[0] for c in d.changes}
     # both "v" members (outer.v and inner.v) are kept; "other" is skipped
     assert paths == {"$.outer.v", "$.inner.v"}
@@ -418,7 +444,7 @@ def test_include_dotted_name_targets_one_path_only():
     # members with the same bare name elsewhere
     a = {"build": 1, "cfg": {"build": 2}, "deep": {"build": 3}}
     b = {"build": 5, "cfg": {"build": 9}, "deep": {"build": 7}}
-    d = diff(a, b, include=frozenset({"$.cfg.build"}))
+    d = diff(a, b, include=frozenset({"$.cfg.build"}), include_leaf=_leaf_filter("$.cfg.build"))
     paths = {c[0] for c in d.changes}
     # only cfg.build is kept; the top-level build and deep.build are skipped
     assert paths == {"$.cfg.build"}
@@ -442,7 +468,7 @@ def test_include_does_not_prune_array_elements():
     a = {"tags": [1, 2, 3], "meta": {"v": 1}}
     b = {"tags": [1, 4], "meta": {"v": 9}}
     # "tags" (covers its element list) + "v" (the inner leaf) are both allowed
-    d = diff(a, b, include=frozenset({"tags", "v"}))
+    d = diff(a, b, include=frozenset({"tags", "v"}), include_leaf=_leaf_filter({"tags", "v"}))
     paths = {c[0] for c in d.changes}
     assert "$.tags[1]" in paths and "$.tags[2]" in paths and "$.meta.v" in paths
 
@@ -742,3 +768,164 @@ def test_cli_summary_takes_precedence(capsys):
     # summary wins: table shape, not stats lines or a JSON array
     assert lines[0].startswith("key") and "TOTAL" in out
     assert not out.lstrip().startswith("[")
+
+
+# --- wildcard patterns ('$.a.*') in --ignore / --include ---------------------
+
+def test_parse_ignore_splits_wildcards():
+    from jsondiff.diff import parse_ignore
+
+    exact, wild = parse_ignore("$.cfg.*,build,$.items[0].meta.*")
+    assert exact == frozenset({"build"})
+    assert wild == frozenset({"$.cfg.*", "$.items[0].meta.*"})
+
+
+def test_parse_include_splits_wildcards():
+    from jsondiff.diff import parse_include
+
+    exact, wild = parse_include("name,$.server.*")
+    assert exact == frozenset({"name"})
+    assert wild == frozenset({"$.server.*"})
+
+
+def test_ignore_wildcard_suppresses_object_members():
+    a = {"build": 1, "cfg": {"host": "h", "port": 80}, "deep": {"build": 2}}
+    b = {"build": 9, "cfg": {"host": "H", "port": 81}, "deep": {"build": 3}}
+    d = diff(a, b, ignore_wild=frozenset({"$.cfg.*"}))
+    paths = {c[0] for c in d.changes}
+    # every member of cfg is suppressed; 'build' anywhere else still diffs
+    assert paths == {"$.build", "$.deep.build"}
+
+
+def test_ignore_wildcard_one_level_deep_only():
+    # '$.a.*' claims a's members, not the children of those members
+    a = {"a": {"b": {"c": 1}}, "x": 1}
+    b = {"a": {"b": {"c": 9}}, "x": 2}
+    d = diff(a, b, ignore_wild=frozenset({"$.a.*"}))
+    paths = {c[0] for c in d.changes}
+    # a's own member 'b' is claimed (the whole b subtree rolls under it),
+    # so only x is reported
+    assert paths == {"$.x"}
+
+
+def test_ignore_wildcard_added_and_removed_members():
+    a = {"cfg": {"old": 1, "keep": 2}}
+    b = {"cfg": {"new": 9, "keep": 3}}
+    d = diff(a, b, ignore_wild=frozenset({"$.cfg.*"}))
+    paths = {c[0] for c in d.changes}
+    # old removed + new added are both suppressed; keep changed is not
+    assert paths == {"$.cfg.keep"}
+
+
+def test_include_wildcard_restricts_to_object_members():
+    a = {"name": "x", "server": {"host": "h", "port": 1}, "build": 7}
+    b = {"name": "y", "server": {"host": "H", "port": 2}, "build": 8}
+    d = diff(a, b, include_wild=frozenset({"$.server.*"}))
+    paths = {c[0] for c in d.changes}
+    # only server's members are reported; name and build are skipped
+    assert paths == {"$.server.host", "$.server.port"}
+
+
+def test_include_wildcard_descends_for_deeper_claimed_keys():
+    # the walk descends through non-claimed containers, so a deeper listed
+    # path under an unclaimed object is still found (documented --include rule)
+    a = {"name": "x", "deep": {"cfg": {"build": 1}}}
+    b = {"name": "y", "deep": {"cfg": {"build": 9}}}
+    d = diff(a, b, include=frozenset({"$.deep.cfg.build"}),
+             include_leaf=_leaf_filter("$.deep.cfg.build"))
+    paths = {c[0] for c in d.changes}
+    assert paths == {"$.deep.cfg.build"}
+
+
+def test_ignore_wildcard_combines_with_exact_ignore_and_include():
+    # ignore wins over include; exact and wildcard ignores stack additively
+    a = {"cfg": {"build": 1, "host": "h"}, "name": "x", "other": 1}
+    b = {"cfg": {"build": 9, "host": "H"}, "name": "y", "other": 2}
+    d = diff(
+        a, b,
+        ignore=frozenset({"$.cfg.host"}),
+        include=frozenset({"name", "$.cfg.build"}),
+        include_leaf=_leaf_filter({"name", "$.cfg.build"}),
+        ignore_wild=frozenset({"$.cfg.*"}),
+    )
+    paths = {c[0] for c in d.changes}
+    # host: exact-ignored; build: included but claimed by the wildcard -> gone;
+    # name: included, unclaimed -> reported; other: not included -> skipped
+    assert paths == {"$.name"}
+
+
+def test_ignore_wildcard_nested_location():
+    a = {"items": [{"meta": {"v": 1}}, {"meta": {"v": 2}}]}
+    b = {"items": [{"meta": {"v": 9}}, {"meta": {"v": 8}}]}
+    d = diff(a, b, ignore_wild=frozenset({"$.items[0].meta.*"}))
+    paths = {c[0] for c in d.changes}
+    # only the first element's meta members are claimed
+    assert paths == {"$.items[1].meta.v"}
+
+
+def test_ignore_wildcard_keeps_fast_path_silent():
+    # a difference confined to a wildcard-pruned member must not defeat the
+    # normalized fast path (no full re-diff, no spurious record)
+    a = {"cfg": {"host": "h"}, "stable": 1}
+    b = {"cfg": {"host": "H"}, "stable": 1}
+    assert diff(a, b, ignore_wild=frozenset({"$.cfg.*"})).changes == []
+
+
+def test_no_normalize_wildcard_still_reports_reorder():
+    # strict mode: the key-order record is still emitted when a wildcard is
+    # in play (the per-member walk handles value-level suppression)
+    a = {"cfg": {"host": "h", "port": 1}}
+    b = {"cfg": {"port": 2, "host": "H"}}
+    d = diff(a, b, normalize=False, ignore_wild=frozenset({"$.cfg.*"}))
+    kinds = {c[1] for c in d.changes}
+    assert "changed" in kinds  # the container reorder itself
+
+
+def test_cli_ignore_wildcard_flag(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(
+            ['{"build":1,"cfg":{"host":"h","port":80},"x":1}',
+             '{"build":9,"cfg":{"host":"H","port":81},"x":2}',
+             "--ignore", "$.cfg.*", "--compact"],
+        )
+    assert exc.value.code == 0
+    recs = json.loads(capsys.readouterr().out)
+    assert sorted(r["path"] for r in recs) == ["$.build", "$.x"]
+
+
+def test_cli_include_wildcard_flag(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit):
+        main(
+            ['{"name":"x","server":{"host":"h","port":1},"build":7}',
+             '{"name":"y","server":{"host":"H","port":2},"build":8}',
+             "--include", "$.server.*,name", "--compact"],
+        )
+    recs = json.loads(capsys.readouterr().out)
+    paths = {r["path"] for r in recs}
+    assert paths == {"$.server.host", "$.server.port", "$.name"}
+
+
+def test_cli_wildcard_with_q_exit_code(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    # a change confined to the wildcard-ignored object -> clean under -q
+    with pytest.raises(SystemExit) as exc:
+        main(
+            ['{"cfg":{"a":1},"ok":1}', '{"cfg":{"a":2},"ok":1}',
+             "--ignore", "$.cfg.*", "-q"],
+        )
+    assert exc.value.code == 0
+    # ...and a change outside it still fails the gate
+    with pytest.raises(SystemExit) as exc:
+        main(
+            ['{"cfg":{"a":1},"ok":1}', '{"cfg":{"a":2},"ok":9}',
+             "--ignore", "$.cfg.*", "-q"],
+        )
+    assert exc.value.code == 1
