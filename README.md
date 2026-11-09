@@ -219,6 +219,23 @@ The exit codes also make it composable in shell pipelines without parsing the
 human-readable output — `--compact` emits JSON when you *do* need to inspect
 what changed after the gate fails.
 
+### Exit codes
+
+jsondiff uses a fixed, documented exit-code contract so shell logic can branch
+on the *kind* of failure without parsing the output:
+
+| code | meaning                                                                 |
+| ---- | ----------------------------------------------------------------------- |
+| `0`  | the two values are identical (also the code when they differ but `-q` was not given) |
+| `1`  | changes were found, with `-q` / `--fail-on-change`                       |
+| `2`  | a JSON input failed to parse (line + column reported on stderr)          |
+| `3`  | usage error: unknown flag, missing or extra positional, or an invalid `--format` choice |
+
+The 2-vs-3 split is deliberate: a malformed *document* (your data is wrong) is
+distinguishable from a malformed *invocation* (you mistyped the command), which
+matters in CI where the two call for different fixes. The contract is pinned by
+`tests/test_diff.py::test_exit_code_contract_full_matrix`.
+
 ## Tests
 
 ```bash
