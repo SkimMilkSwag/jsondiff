@@ -929,3 +929,68 @@ def test_cli_wildcard_with_q_exit_code(capsys):
              "--ignore", "$.cfg.*", "-q"],
         )
     assert exc.value.code == 1
+
+
+# --- exit-code contract (0 identical / 1 changes / 2 parse / 3 usage) -------
+#
+# Pins the four-way exit-code contract end to end, so a refactor that lets a
+# usage error bleed into 2 (or vice versa) is caught here.
+
+def test_exit_code_contract_full_matrix(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    def code(args):
+        with pytest.raises(SystemExit) as exc:
+            main(args)
+        return exc.value.code
+
+    # 0 -- identical documents (with and without -q; the report still prints)
+    assert code(['{"a":1,"b":[1,2]}', '{"a":1,"b":[1,2]}']) == 0
+    assert code(['{"a":1}', '{"a":1}', "-q"]) == 0
+
+    # 1 -- changes exist, only when -q / --fail-on-change is given (otherwise
+    # the diff still exits 0 so the human report can be consumed)
+    assert code(['{"a":1}', '{"a":2}']) == 0
+    assert code(['{"a":1}', '{"a":2}', "-q"]) == 1
+    assert code(['{"a":1}', '{"a":2}', "--fail-on-change", "--compact"]) == 1
+
+    # 2 -- a JSON parse failure (line/column reported, not conflated with 3)
+    assert code(['{"a": oops}', '{"a":1}']) == 2
+    assert code(['{"a":1}', '{"a": oops}']) == 2
+
+    # 3 -- usage errors: unknown flag, missing positional, extra positional,
+    # and an invalid --format choice all land on 3
+    assert code(['{"a":1}', '{"a":2}', "--no-such-flag"]) == 3
+    assert code(['{"a":1}']) == 3
+    assert code(['{"a":1}', '{"a":1}', '{"a":1}']) == 3
+    assert code(['{"a":1}', '{"a":1}', "-s", "--format", "xml"]) == 3
+
+
+def test_usage_error_message_goes_to_stderr(capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1}', '{"a":2}', "--no-such-flag"])
+    assert exc.value.code == 3
+    err = capsys.readouterr().err
+    # argparse's own phrasing is preserved, and nothing leaked to stdout
+    assert "unrecognized arguments" in err or "error:" in err
+
+
+def test_parse_error_still_exits_two_not_three(tmp_path, capsys):
+    import pytest
+    from jsondiff.__main__ import main
+
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"a": 1,')
+    good = tmp_path / "good.json"
+    good.write_text('{"a": 1}')
+
+    with pytest.raises(SystemExit) as exc:
+        main([str(bad), str(good)])
+    # the documented 2-vs-3 split: a parse failure is NOT a usage error
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "bad.json" in err and "line" in err
