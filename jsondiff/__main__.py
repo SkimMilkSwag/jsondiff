@@ -2,7 +2,7 @@
 import argparse
 import json
 import sys
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, NoReturn, Optional
 
 from .diff import (
     diff,
@@ -26,6 +26,32 @@ class ParseError(Exception):
         self.line = exc.lineno
         self.column = exc.colno
         super().__init__(f"{where}: line {exc.lineno}, column {exc.colno} — {exc.msg}")
+
+
+# Exit-code contract (documented in the README): 0 identical / 1 changes
+# found (with -q) / 2 parse error / 3 usage error. argparse's own error() and
+# the invalid-choice path both call sys.exit(2), so a UsageError handler is
+# needed to remap them onto the documented code 3 without shadowing the
+# legitimate exit-2 that a real JSON parse failure produces (that one bypasses
+# argparse entirely).
+class UsageError(Exception):
+    """Raised when argparse rejects its arguments (bad flag, missing or extra
+    positional, invalid choice). Carries no payload; ``main`` converts it to
+    exit code 3."""
+
+
+def _usage_error_handler(parser: "argparse.ArgumentParser", message: str) -> None:
+    """argparse ``error`` override that raises :class:`UsageError` instead of the
+    default ``sys.exit(2)``, so the documented usage-error exit code (3) is used.
+
+    The message is printed to stderr exactly as argparse would (usage line plus
+    the error text). A real JSON parse failure never reaches here — that exits
+    2 from inside ``main`` before any argparse error fires, so the two codes
+    stay distinct.
+    """
+    parser.print_usage(sys.stderr)
+    print(f"{parser.prog}: error: {message}", file=sys.stderr)
+    raise UsageError() from None
 
 
 def _load(src: str) -> Any:
@@ -82,6 +108,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         prog="jsondiff",
         description="Diff two JSON files or JSON strings and print a human-readable summary.",
     )
+    # Remap argparse's error/exit-2 path onto the documented usage-error code 3.
+    # (A real JSON parse failure exits 2 from inside main, before any argparse
+    # error, so the two codes remain distinct.)
+    p.error = _usage_error_handler.__get__(p)
     p.add_argument("a", help="first JSON file, '-' for stdin, or a literal JSON string")
     p.add_argument("b", help="second JSON file, '-' for stdin, or a literal JSON string")
     p.add_argument(
@@ -143,7 +173,19 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="compare values exactly as written: dict key order and the "
              "int/float distinction (1 vs 1.0) are treated as differences",
     )
-    args = p.parse_args(argv)
+    try:
+        args = p.parse_args(argv)
+    except UsageError:
+        # argparse raised via the overridden error handler (bad flag, missing
+        # or extra positional). The usage line + message are already on stderr.
+        sys.exit(3)
+    except SystemExit as e:
+        # An invalid --format choice reaches here: argparse's _check_value path
+        # calls sys.exit(2) directly, which the error override does not
+        # intercept. Remap it onto the documented usage-error code 3.
+        if e.code == 2:
+            sys.exit(3)
+        raise
 
     def load_arg(name: str, src: str) -> Any:
         """Load one CLI argument as JSON.
