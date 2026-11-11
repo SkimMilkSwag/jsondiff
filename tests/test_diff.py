@@ -1,7 +1,8 @@
 import json
 import sys, os
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from jsondiff.diff import diff, format_report, format_json
+from jsondiff.diff import diff, format_report, format_json, format_stats, format_summary
 
 
 def _leaf_filter(include):
@@ -994,3 +995,117 @@ def test_parse_error_still_exits_two_not_three(tmp_path, capsys):
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "bad.json" in err and "line" in err
+
+
+# ---------------------------------------------------------------------------
+# --limit: cap the number of reported changes (library Diff.truncate + CLI)
+# ---------------------------------------------------------------------------
+
+def test_truncate_caps_changes_and_records_overflow():
+    d = diff({"a": 1, "b": 2, "c": 3}, {"a": 9, "b": 8, "c": 7})
+    assert len(d.changes) == 3
+    assert d.truncated == 0
+    d.truncate(2)
+    assert len(d.changes) == 2
+    assert d.truncated == 1
+    # keeps the first records in diff order
+    assert [c.path for c in d.changes] == ["$.a", "$.b"]
+
+
+def test_truncate_zero_or_negative_is_a_noop():
+    d = diff({"a": 1, "b": 2}, {"a": 2, "b": 3})
+    # 0 is the documented "no limit" sentinel: it does not cap, and it clears
+    # a previous cap's overflow counter (dropped records stay dropped)
+    d.truncate(1)
+    assert d.truncated == 1
+    d.truncate(0)
+    assert len(d.changes) == 1 and d.truncated == 0
+    d2 = diff({"a": 1, "b": 2}, {"a": 2, "b": 3})
+    d2.truncate(-5)
+    assert len(d2.changes) == 2 and d2.truncated == 0
+
+
+def test_truncate_at_or_above_count_is_silent():
+    d = diff({"a": 1}, {"a": 2})
+    d.truncate(1)   # exactly the change count: no overflow
+    assert len(d.changes) == 1 and d.truncated == 0
+    d3 = diff({"a": 1, "b": 2}, {"a": 2, "b": 3}).truncate(10)
+    assert len(d3.changes) == 2 and d3.truncated == 0
+
+
+def test_format_report_shows_truncation_note():
+    d = diff({"a": 1, "b": 2, "c": 3}, {"a": 9, "b": 8, "c": 7}).truncate(1)
+    out = format_report(d)
+    assert out.splitlines()[0] == "1 difference(s) found:"
+    assert "$.a" in out and "$.b" not in out
+    assert "... and 2 more change(s) not shown (diff capped by --limit)" in out
+
+
+def test_format_report_no_note_when_not_capped():
+    d = diff({"a": 1}, {"a": 2}).truncate(5)
+    out = format_report(d)
+    assert "not shown" not in out
+    assert out == "1 difference(s) found:\n  $.a: 1 -> 2"
+
+
+def test_format_stats_shows_truncation_note():
+    # 3 changes total: $.a changed, $.b removed, $.c added; keep one
+    d = diff({"a": 1, "b": 2}, {"a": 9, "c": 3}).truncate(1)
+    out = format_stats(d)
+    # counts cover only the reported (kept) changes
+    assert "  changed: 1" in out and "  removed: 0" in out
+    assert "  total: 1" in out
+    assert "... and 2 more change(s) not shown (diff capped by --limit)" in out
+
+
+def test_format_summary_shows_truncation_note():
+    d = diff({"x": {"a": 1, "b": 2}, "y": {"c": 3}},
+             {"x": {"a": 9, "b": 8}, "y": {"c": 7}}).truncate(2)
+    out = format_summary(d)
+    # rows cover only kept changes; the cap is still visible
+    assert "... and 1 more change(s) not shown (diff capped by --limit)" in out
+    assert "TOTAL" in out
+
+
+def test_format_json_stays_pure_json_when_capped():
+    d = diff({"a": 1, "b": 2}, {"a": 9, "b": 8}).truncate(1)
+    recs = json.loads(format_json(d))
+    assert len(recs) == 1 and recs[0]["path"] == "$.a"
+    # no trailing note line breaks the JSON parse (verified by loads above);
+    # and the note text itself never appears inside a record
+    assert not any("not shown" in json.dumps(r) for r in recs)
+
+
+def test_cli_limit_flag(capsys):
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"b":2,"c":3}', '{"a":9,"b":8,"c":7}', "--limit", "2", "-q"])
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    lines = out.strip().splitlines()
+    assert lines[0] == "2 difference(s) found:"
+    assert "$.c" not in out
+    assert "... and 1 more change(s) not shown (diff capped by --limit)" in out
+
+
+def test_cli_limit_short_flag_and_q_exit_one(capsys):
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"b":2}', '{"a":9,"b":8}', "-l", "1", "-q"])
+    out = capsys.readouterr().out
+    assert "... and 1 more change(s)" in out
+    # -q exits 1 even though only one of two changes was shown
+    assert exc.value.code == 1
+
+
+def test_cli_limit_zero_is_unlimited(capsys):
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"b":2}', '{"a":9,"b":8}', "-l", "0", "-q"])
+    out = capsys.readouterr().out
+    assert "2 difference(s) found:" in out
+    assert "not shown" not in out
+    assert exc.value.code == 1

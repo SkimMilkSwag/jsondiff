@@ -167,6 +167,17 @@ def main(argv: Optional[List[str]] = None) -> None:
              "counts for quick CI triage (takes precedence over --stats/--compact)",
     )
     p.add_argument(
+        "-l",
+        "--limit",
+        type=int,
+        metavar="N",
+        default=0,
+        help="report at most N changes (in diff order); 0 = no limit. The "
+             "human-readable output, --stats, and --summary note how many "
+             "more changes were not shown; -q still exits 1 when any change "
+             "exists",
+    )
+    p.add_argument(
         "-N",
         "--no-normalize",
         action="store_true",
@@ -219,6 +230,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         include=inc_exact, include_leaf=_leaf_filter(inc_exact, inc_wild), include_wild=inc_wild,
         normalize=not args.no_normalize,
     )
+    if args.limit:
+        d.truncate(args.limit)
     if args.summary:
         print(format_summary(d))
     elif args.stats:

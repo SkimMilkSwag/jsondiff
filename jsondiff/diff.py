@@ -97,6 +97,29 @@ class Diff:
 
     def __init__(self) -> None:
         self.changes: List[Change] = []
+        # Number of changes dropped by :meth:`truncate` (0 when the diff was
+        # not capped), so every output mode can say how many more changes
+        # exist beyond the reported ones.
+        self.truncated = 0
+
+    def truncate(self, limit: int) -> "Diff":
+        """Cap ``changes`` at ``limit`` records (0 or negative = unlimited).
+
+        Keeps the first ``limit`` records in diff order and stashes the
+        overflow count in :attr:`truncated`, which the formatters surface as a
+        trailing note. A limit of 0 (or below) is the no-limit sentinel: it
+        clears any previous cap's overflow counter (records dropped by an
+        earlier truncation are gone — capping is destructive). Returns
+        ``self`` for chaining: ``diff(a, b).truncate(10)``.
+        """
+        if limit <= 0:
+            self.truncated = 0
+            return self
+        if len(self.changes) <= limit:
+            return self
+        self.truncated = len(self.changes) - limit
+        del self.changes[limit:]
+        return self
 
     def _add(self, path: str, kind: str, old: Any = None, new: Any = None) -> None:
         self.changes.append(Change(path, kind, old, new))
@@ -498,7 +521,22 @@ def format_report(d: Diff) -> str:
         else:
             lines.append(f"  {path}: {old!r} -> {new!r}")
     header = f"{len(d.changes)} difference(s) found:"
-    return header + "\n" + "\n".join(lines)
+    out = [header] + lines
+    note = truncation_note(d)
+    if note:
+        out.append(f"  {note}")
+    return "\n".join(out)
+
+
+def truncation_note(d: Diff) -> Optional[str]:
+    """Tail line for a diff capped by ``Diff.truncate`` (None when not capped).
+
+    The human-readable report, ``--stats``, and ``--summary`` all append this
+    note so a cap is never silent; ``--compact`` stays pure JSON instead.
+    """
+    if not d.truncated:
+        return None
+    return f"... and {d.truncated} more change(s) not shown (diff capped by --limit)"
 
 
 def stats_counts(d: Diff) -> Dict[str, int]:
@@ -523,6 +561,9 @@ def format_stats(d: Diff) -> str:
     counts = stats_counts(d)
     lines = [f"  {kind}: {counts[kind]}" for kind in ("added", "removed", "changed", "type")]
     lines.append(f"  total: {counts['total']}")
+    note = truncation_note(d)
+    if note:
+        lines.append(f"  {note}")
     return "\n".join(lines)
 
 
@@ -587,4 +628,7 @@ def format_summary(d: Diff) -> str:
         f"{'TOTAL':<23} {grand['added']:<8} {grand['removed']:<9} "
         f"{grand['changed']:<9} {grand['type']:<7} {grand_total}"
     )
+    note = truncation_note(d)
+    if note:
+        lines.append(note)
     return "\n".join(lines)
