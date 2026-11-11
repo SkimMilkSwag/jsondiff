@@ -1109,3 +1109,121 @@ def test_cli_limit_zero_is_unlimited(capsys):
     assert "2 difference(s) found:" in out
     assert "not shown" not in out
     assert exc.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# --limit edge cases: boundary limits, precedence, and output-mode interactions
+# ---------------------------------------------------------------------------
+
+def test_limit_exceeding_change_count_is_silent():
+    d = diff({"a": 1}, {"a": 2})
+    d.truncate(99)
+    assert len(d.changes) == 1 and d.truncated == 0
+    for fmt in (format_report, format_stats, format_summary):
+        out = fmt(d)
+        assert "not shown" not in out
+
+
+def test_limit_one_keeps_first_change_in_diff_order():
+    # added + removed + changed all present; limit=1 keeps only the first
+    d = diff({"a": 1, "b": 2, "c": 3}, {"x": 9, "b": 8, "c": 7})
+    kinds_before = [c.kind for c in d.changes]
+    d.truncate(1)
+    assert len(d.changes) == 1
+    assert d.truncated == len(kinds_before) - 1
+    # the survivor is diff-order-first, whatever kind that is
+    assert d.changes[0].path == "$.a"
+
+
+def test_limit_applies_after_ignore_pruning():
+    # 3 real changes; --ignore b leaves 2, and limit caps those 2 to 1
+    a = {"a": 1, "b": 2, "c": 3}
+    b = {"a": 9, "b": 8, "c": 7}
+    d = diff(a, b, ignore=frozenset({"b"}))
+    assert len(d.changes) == 2
+    d.truncate(1)
+    assert len(d.changes) == 1 and d.truncated == 1
+    assert d.changes[0].path == "$.a"
+
+
+def test_limit_with_keyed_arrays_caps_pairs_and_elements():
+    # 2 changed members across keyed pairs + one added element; cap at 2
+    a = {"u": [{"id": 1, "n": "x"}, {"id": 2, "n": "y"}]}
+    b = {"u": [{"id": 2, "n": "z"}, {"id": 1, "n": "w"}, {"id": 3, "n": "v"}]}
+    d = diff(a, b, key_field="id")
+    before = len(d.changes)
+    assert before >= 2
+    d.truncate(2)
+    assert len(d.changes) == 2
+    assert d.truncated == before - 2
+
+
+def test_limit_with_no_normalize_strict_mode():
+    # strict mode reports a key-order swap as one change; limit==count is a no-op
+    a = {"x": 1, "y": 2}
+    b = {"y": 2, "x": 1}
+    d = diff(a, b, normalize=False)
+    assert len(d.changes) == 1
+    d.truncate(1)
+    assert len(d.changes) == 1 and d.truncated == 0
+
+
+def test_cli_limit_precedence_with_all_output_flags(capsys):
+    # --limit combines with every output mode; --summary wins precedence
+    from jsondiff.__main__ import main
+
+    args = ['{"a":{"p":1,"q":2},"b":{"r":3}}',
+            '{"a":{"p":9,"q":8},"b":{"r":7}}',
+            "--limit", "1", "--summary", "-q"]
+    with pytest.raises(SystemExit) as exc:
+        main(args)
+    out = capsys.readouterr().out
+    # summary table rendered (not the report), capped, note present
+    assert "TOTAL" in out and "key" in out.splitlines()[0]
+    assert "... and 2 more change(s) not shown (diff capped by --limit)" in out
+    assert exc.value.code == 1
+
+    # --stats with --limit: counts cover only kept changes
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":{"p":1,"q":2},"b":{"r":3}}',
+              '{"a":{"p":9,"q":8},"b":{"r":7}}',
+              "--limit", "1", "-s", "-q"])
+    out = capsys.readouterr().out
+    assert "  total: 1" in out
+    assert "... and 2 more change(s) not shown (diff capped by --limit)" in out
+
+    # --compact with --limit: pure JSON of the kept records, no note line
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":{"p":1,"q":2},"b":{"r":3}}',
+              '{"a":{"p":9,"q":8},"b":{"r":7}}',
+              "--limit", "1", "-c", "-q"])
+    out = capsys.readouterr().out
+    recs = json.loads(out)
+    assert isinstance(recs, list) and len(recs) == 1
+    assert "not shown" not in out
+
+
+def test_cli_limit_negative_value_is_unlimited(capsys):
+    # negative N is treated as the no-limit sentinel, like 0
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"b":2}', '{"a":9,"b":8}', "--limit", "-3", "-q"])
+    out = capsys.readouterr().out
+    assert "2 difference(s) found:" in out
+    assert "not shown" not in out
+    assert exc.value.code == 1
+
+
+def test_cli_limit_one_with_type_change_and_added(capsys):
+    # mixed kinds: type change + added key; limit=1 keeps only the first
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"a":1,"b":"x"}', '{"a":[1],"c":5}', "--limit", "1", "-q"])
+    out = capsys.readouterr().out
+    assert out.strip().splitlines()[0] == "1 difference(s) found:"
+    # 3 changes total (type + removed + added); the cap reports the rest
+    assert "... and 2 more change(s) not shown (diff capped by --limit)" in out
+    # both kinds were suppressed beyond the first record
+    assert exc.value.code == 1
