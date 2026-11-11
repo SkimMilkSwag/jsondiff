@@ -191,10 +191,32 @@ jsondiff --include '$.server.*,name' old.json new.json
 In the library the patterns arrive as the second element of the tuples
 `parse_ignore()` / `parse_include()` return: `diff(a, b, ignore_wild=frozenset({"$.cfg.*"}))`.
 
+### Capping the change count (`--limit`)
+
+For documents with hundreds of differences, `--limit N` prints at most N
+changes (in diff order) so the report stays scannable — the first N are shown,
+and the human-readable output, `--stats`, and `--summary` append a tail line
+saying how many more changes were not shown:
+
+```bash
+jsondiff --limit 5 old.json new.json
+# 5 difference(s) found:
+#   ... (first five changes)
+#   ... and 137 more change(s) not shown (diff capped by --limit)
+```
+
+`--compact` stays pure JSON (just the kept records, so it still pipes into
+other tools), and `-q` still exits 1 when *any* difference exists — a cap
+limits what you see, not whether the gate fails. `0` (or a negative value)
+means no limit, which is also the default without the flag. In the library:
+`diff(a, b).truncate(5)` caps a `Diff` the same way and records the overflow
+in its `truncated` counter.
+
 ## CI (GitHub Actions)
 
 `--fail-on-change` makes the tool CI-friendly: exit code 0 when the two JSON
-values are identical, 1 when they differ, 2 when a file fails to parse. Wire it
+values are identical, 1 when they differ (with `-q`), 2 when a file fails to
+parse, and 3 on a usage error — see [Exit codes](#exit-codes) below. Wire it
 into a workflow to fail a pipeline when a rendered artifact drifts from its
 committed copy (or any other "two configs should match" check):
 
