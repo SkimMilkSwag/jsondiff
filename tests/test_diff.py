@@ -130,6 +130,80 @@ def test_keyless_array_without_key_flag_is_positional():
     assert len(diff(a, b).changes) == 2
 
 
+def test_keyed_duplicate_ids_pair_in_order_of_appearance():
+    # two a-side items share id 1; the single b-side id-1 item pairs with the
+    # first a-side one (in order of appearance), so the second is removed
+    a = {"u": [{"id": 1, "n": "x"}, {"id": 2, "n": "y"}]}
+    b = {"u": [{"id": 1, "n": "z"}]}
+    d = diff(a, b, key_field="id")
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.u<id>.n", "changed"),
+        ("$.u[2]", "removed"),
+    ]
+
+
+def test_keyed_duplicate_ids_on_both_sides_remove_the_extra():
+    # duplicate key values pair up one-to-one; the surplus a-side item is
+    # removed, and the matched pair's identical content produces no change
+    a = {"u": [{"id": 1, "n": "x"}, {"id": 1, "n": "y"}]}
+    b = {"u": [{"id": 1, "n": "x"}]}
+    d = diff(a, b, key_field="id")
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.u[1]", "removed"),
+    ]
+
+
+def test_keyed_array_with_non_object_elements():
+    # elements missing the key field are never matched: they end up as
+    # removed/added records with a None key value in the path, while the
+    # keyed objects still pair by id
+    a = {"u": [42, {"id": 1, "n": "x"}]}
+    b = {"u": [{"id": 1, "n": "y"}, 42]}
+    d = diff(a, b, key_field="id")
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.u<id>.n", "changed"),
+        ("$.u[None]", "removed"),
+        ("$.u[None]", "added"),
+    ]
+
+
+def test_keyed_nested_arrays_under_matched_items():
+    # arrays nested inside a matched keyed item are diffed positionally: the
+    # key applies to the outer array only, and the path records both the
+    # <id> pair marker and the inner element index
+    a = {"outer": [{"id": "A", "tags": [{"k": 1}]}]}
+    b = {"outer": [{"id": "A", "tags": [{"k": 2}]}]}
+    d = diff(a, b, key_field="id")
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.outer<id>.tags[0].k", "changed"),
+    ]
+
+
+def test_keyed_array_with_unhashable_key_value():
+    # a key value that is not str/int/float/bool (here a list) can never be
+    # matched and is reported removed with its repr in the path; hashable
+    # items still pair as usual
+    a = {"u": [{"id": [1], "n": "x"}, {"id": 2, "n": "y"}]}
+    b = {"u": [{"id": 2, "n": "z"}]}
+    d = diff(a, b, key_field="id")
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.u<id>.n", "changed"),
+        ("$.u[[1]]", "removed"),
+    ]
+
+
+def test_keyed_array_element_missing_key_field_is_never_matched():
+    # an element without the key field is always unmatched — even when it has
+    # no counterpart on the other side — while keyed items pair by value
+    a = {"u": [{"n": "nokey"}, {"id": 1, "n": "x"}]}
+    b = {"u": [{"id": 1, "n": "y"}]}
+    d = diff(a, b, key_field="id")
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.u<id>.n", "changed"),
+        ("$.u[None]", "removed"),
+    ]
+
+
 def test_cli_key_flag(capsys):
     import pytest
     from jsondiff.__main__ import main
