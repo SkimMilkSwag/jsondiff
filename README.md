@@ -212,6 +212,32 @@ means no limit, which is also the default without the flag. In the library:
 `diff(a, b).truncate(5)` caps a `Diff` the same way and records the overflow
 in its `truncated` counter.
 
+`--limit` combines with every other output flag — the counts it produces are
+the counts of the *kept* records, with the note covering the rest:
+
+```bash
+jsondiff --limit 2 --stats old.json new.json
+#   added: 0
+#   removed: 0
+#   changed: 2
+#   type: 0
+#   total: 2
+#   ... and 2 more change(s) not shown (diff capped by --limit)
+
+jsondiff --limit 2 --summary old.json new.json
+# key                     added  removed  changed  type   total
+# a                       0        0         1         0       1
+# b                       0        0         1         0       1
+# TOTAL                   0        0         2         0       2
+# ... and 2 more change(s) not shown (diff capped by --limit)
+
+jsondiff --limit 2 --compact old.json new.json
+# [ {"path": "$.a", ...}, {"path": "$.b", ...} ]   # just the kept records
+```
+
+So `--stats --limit N` answers "how much changed, at most N shown" — the
+`total` reflects the cap, and the note tells you the true remainder.
+
 ## CI (GitHub Actions)
 
 `--fail-on-change` makes the tool CI-friendly: exit code 0 when the two JSON
