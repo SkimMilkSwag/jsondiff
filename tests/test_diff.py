@@ -2,7 +2,14 @@ import json
 import sys, os
 import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from jsondiff.diff import diff, format_report, format_json, format_stats, format_summary
+from jsondiff.diff import (
+    Change,
+    diff,
+    format_report,
+    format_json,
+    format_stats,
+    format_summary,
+)
 
 
 def _leaf_filter(include):
@@ -1227,3 +1234,59 @@ def test_cli_limit_one_with_type_change_and_added(capsys):
     assert "... and 2 more change(s) not shown (diff capped by --limit)" in out
     # both kinds were suppressed beyond the first record
     assert exc.value.code == 1
+
+
+def test_include_bare_name_claims_top_level_array_elements():
+    # top-level elements ($[i]) have no object-member owner, so a bare name
+    # claims nothing there: the element change stays suppressed (the full-path
+    # and wildcard forms are the ways to claim them — see the next test)
+    d = diff(["a", "b"], ["a", "c"], include=frozenset({"tags"}))
+    assert d.changes == []
+
+
+def test_include_bare_name_claims_top_level_array_added_element():
+    # same rule for added top-level elements: unclaimed lists stay silent
+    d = diff([1], [1, 2], include=frozenset({"items"}))
+    assert d.changes == []
+
+
+def test_include_bare_name_unclaimed_nested_list_is_silent():
+    # a nested list whose owner key is not claimed: element additions to it
+    # are suppressed by the bare-name claim gate (previously they were not)
+    d = diff({"x": [1]}, {"x": [1, 9]}, include=frozenset({"other"}))
+    assert d.changes == []
+
+
+def test_include_bare_name_claims_nested_list_elements():
+    # the owner key IS claimed: element changes/adds to its list are reported
+    d = diff({"tags": ["a"]}, {"tags": ["b", "c"]}, include=frozenset({"tags"}))
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.tags[0]", "changed"),
+        ("$.tags[1]", "added"),
+    ]
+
+
+def test_cli_include_bare_name_claims_nested_list_elements(capsys):
+    # CLI path: main()'s leaf filter strips to the last segment, which already
+    # covers nested element lists; this pins that the CLI and library agree
+    from jsondiff.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(['{"tags":["a","b"]}', '{"tags":["a","c"]}', "--include", "tags", "-q"])
+    out = capsys.readouterr().out
+    assert out.strip() == (
+        "1 difference(s) found:\n"
+        "  $.tags[1]: 'b' -> 'c'"
+    )
+    assert exc.value.code == 1
+
+
+def test_include_top_level_array_element_full_path_and_wildcard():
+    # top-level elements are claimed only by full-path entries or wildcard
+    # patterns (reached through the inline leaf-claim check, not the bare-name
+    # helper): a "$[1]" entry claims exactly that element; "$.*" claims all
+    d = diff([1, 2], [1, 3], include=frozenset({"$[1]"}))
+    assert d.changes == [Change("$[1]", "changed", 2, 3)]
+
+    d2 = diff([1, 2], [1, 9], include_wild=frozenset({"$.*"}))
+    assert [c.path for c in d2.changes] == ["$[1]"]

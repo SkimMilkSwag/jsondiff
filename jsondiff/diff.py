@@ -174,6 +174,31 @@ def _member_matches(wildcards: frozenset[str], name: str, path: str) -> bool:
     return False
 
 
+def _list_element_claimed(
+    path: str, include: Optional[frozenset[str]]
+) -> bool:
+    """Whether an array element at ``path`` is claimed by the include allowlist.
+
+    Array elements are reached through recursion rather than object-member
+    walking, so a bare-name claim like ``--include tags`` has to reach them
+    here: a path like ``$.tags[3]`` is claimed when its owner key — everything
+    before the first ``[``, with any dotted prefix dropped so only the
+    immediate owner's name is compared — appears in ``include``. Top-level
+    elements (``$[i]``) have no owner key and are never claimed here; full-
+    path entries (``"$[1]"``) and wildcard patterns (``"$.*"``) reach them via
+    the caller's leaf filter instead.
+    """
+    if include is None:
+        return False
+    idx = path.find("[")
+    if idx < 0:
+        return False
+    key = path[:idx]
+    if "." in key:
+        key = key.rsplit(".", 1)[-1]
+    return key in include
+
+
 def _project(obj: Any, keys: List[str]) -> Dict[Any, Any]:
     """Project a dict down to only ``keys`` (missing keys are dropped).
 
@@ -442,9 +467,15 @@ def diff(
             for i in range(max(len(a), len(b))):
                 item_path = f"{path}[{i}]"
                 if i >= len(b):
-                    d._add(item_path, "removed", a[i])
+                    # removed element: an include allowlist claims the list by
+                    # its owner key (the documented bare-key-covers-its-element-
+                    # list rule) — unclaimed lists stay silent.
+                    if include is None or _list_element_claimed(item_path, include):
+                        d._add(item_path, "removed", a[i])
                 elif i >= len(a):
-                    d._add(item_path, "added", new=b[i])
+                    # added element: same claim gate
+                    if include is None or _list_element_claimed(item_path, include):
+                        d._add(item_path, "added", new=b[i])
                 else:
                     sub = diff(
                         a[i], b[i], item_path, key_field,
@@ -460,7 +491,10 @@ def diff(
         # matching at every depth, full-path matching, and the documented
         # bare-key-covers-its-element-list behaviour for array elements).
         if include_leaf is not None:
-            if not include_leaf(path):
+            claimed = include_leaf(path) or _list_element_claimed(
+                path, include
+            )
+            if not claimed:
                 return d
         elif include is not None or include_wild is not None:
             seg = path.rsplit(".", 1)[-1] if "." in path else path
@@ -470,6 +504,7 @@ def diff(
                 seg = base
             claimed = (
                 (include is not None and (seg in include or path in include))
+                or _list_element_claimed(path, include)
                 or (include_wild is not None and _member_matches(include_wild, seg, path.rsplit(".", 1)[0] if "." in path else "$"))
             )
             if not claimed:
