@@ -1364,3 +1364,108 @@ def test_include_top_level_array_element_full_path_and_wildcard():
 
     d2 = diff([1, 2], [1, 9], include_wild=frozenset({"$.*"}))
     assert [c.path for c in d2.changes] == ["$[1]"]
+
+
+# --- --key edge-case pins (2026-11-22) ---------------------------------------
+# The 2026-11-16 batch pinned duplicate ids, non-object elements, and unhashable
+# key values. This batch pins the remaining corners: duplicates spanning both
+# sides, mixed arrays where only one side is keyed, and the key field appearing
+# on nested objects (not just top-level array elements).
+
+
+def test_keyed_duplicate_ids_on_both_sides_pair_one_to_one():
+    # two a-side and two b-side items share id 1; they pair one-to-one in order
+    # of appearance, so the first-a pairs with first-b and second-a with second-b
+    a = {"u": [{"id": 1, "n": "x"}, {"id": 1, "n": "y"}]}
+    b = {"u": [{"id": 1, "n": "x"}, {"id": 1, "n": "z"}]}
+    d = diff(a, b, key_field="id")
+    # only the second pair's n changed; no added/removed
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.u<id>.n", "changed"),
+    ]
+
+
+def test_keyed_duplicate_ids_exhaust_a_side_first():
+    # three a-side items share id 1, only two b-side; the third a-side item is
+    # removed (no b-side counterpart to pair with)
+    a = {"u": [{"id": 1, "n": "x"}, {"id": 1, "n": "y"}, {"id": 1, "n": "z"}]}
+    b = {"u": [{"id": 1, "n": "x"}, {"id": 1, "n": "y"}]}
+    d = diff(a, b, key_field="id")
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.u[1]", "removed"),
+    ]
+
+
+def test_keyed_mixed_array_only_a_side_keyed():
+    # a side has keyed objects, b side has the same keys but as non-objects
+    # (scalars): no pairing possible, everything on both sides is reported
+    a = {"u": [{"id": 1, "n": "x"}, {"id": 2, "n": "y"}]}
+    b = {"u": [1, 2]}
+    d = diff(a, b, key_field="id")
+    kinds = sorted(c.kind for c in d.changes)
+    # two a-side objects removed (keyed path), two b-side scalars added (positional)
+    assert kinds.count("removed") == 2
+    assert kinds.count("added") == 2
+
+
+def test_keyed_mixed_array_only_b_side_keyed():
+    # mirror of the above: keyed objects on b side, scalars on a side
+    a = {"u": [1, 2]}
+    b = {"u": [{"id": 1, "n": "x"}, {"id": 2, "n": "y"}]}
+    d = diff(a, b, key_field="id")
+    kinds = sorted(c.kind for c in d.changes)
+    assert kinds.count("removed") == 2
+    assert kinds.count("added") == 2
+
+
+def test_keyed_nested_objects_with_same_key_field():
+    # the key field appears on nested objects inside matched pairs; the outer
+    # array is keyed, the inner objects carry their own id fields that are NOT
+    # used for pairing (key_field applies only to the outer array level)
+    a = {"rows": [{"id": "A", "cells": [{"id": 1, "v": "p"}, {"id": 2, "v": "q"}]}]}
+    b = {"rows": [{"id": "A", "cells": [{"id": 2, "v": "q"}, {"id": 1, "v": "r"}]}]}
+    d = diff(a, b, key_field="id")
+    # inner cells are diffed positionally (key_field is None for the sub-diff):
+    # cell 0 changed (p->q swap at index 0), cell 1 changed (q->r)
+    paths = sorted(c.path for c in d.changes)
+    assert "$.rows<id>.cells[0].v" in paths
+    assert "$.rows<id>.cells[1].v" in paths
+
+
+def test_keyed_none_key_value_is_hashable_and_pairs():
+    # None is in the hashable set, so id: null items pair by None key
+    a = {"u": [{"id": None, "n": "x"}, {"id": 2, "n": "y"}]}
+    b = {"u": [{"id": None, "n": "z"}, {"id": 2, "n": "y"}]}
+    d = diff(a, b, key_field="id")
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.u<id>.n", "changed"),
+    ]
+
+
+def test_keyed_float_and_int_key_values_distinct():
+    # in Python 1 == 1.0 and hash(1) == hash(1.0), so int and float key values
+    # that are numerically equal DO pair (dict lookup treats them as the same key)
+    a = {"u": [{"id": 1, "n": "x"}]}
+    b = {"u": [{"id": 1.0, "n": "y"}]}
+    d = diff(a, b, key_field="id")
+    # they pair (1 == 1.0 in the dict), and n changed
+    assert [(c.path, c.kind) for c in d.changes] == [
+        ("$.u<id>.n", "changed"),
+    ]
+
+
+def test_keyed_empty_arrays_both_sides():
+    # no elements on either side: no changes, no crash
+    a = {"u": []}
+    b = {"u": []}
+    d = diff(a, b, key_field="id")
+    assert d.changes == []
+
+
+def test_keyed_one_side_empty_array():
+    # all a-side elements removed, no b-side to pair with
+    a = {"u": [{"id": 1, "n": "x"}, {"id": 2, "n": "y"}]}
+    b = {"u": []}
+    d = diff(a, b, key_field="id")
+    assert len(d.changes) == 2
+    assert all(c.kind == "removed" for c in d.changes)
