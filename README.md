@@ -149,6 +149,23 @@ Added/removed elements are reported with their key value in the path; pure
 reordering produces no differences. Arrays without the field (or non-object
 arrays) still fall back to positional comparison.
 
+`--key` combines with `--stats` and `--limit` like any other flag — the counts
+cover the matched pairs' changes, capped to the first N when `--limit` is set:
+
+```bash
+jsondiff --key id --stats --limit 1 old.json new.json
+#   added: 0
+#   removed: 0
+#   changed: 1
+#   type: 0
+#   total: 1
+#   ... and 3 more change(s) not shown (diff capped by --limit)
+```
+
+So `--key id --stats` answers "how many members changed, were added, or were
+removed" for a keyed array, and adding `--limit N` keeps the report scannable
+while the note tells you the true remainder.
+
 ### Restricting the diff to specific keys (`--include`)
 
 `--ignore` suppresses listed keys; `--include` is its inverse — a *leaf*
