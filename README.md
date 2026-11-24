@@ -206,11 +206,14 @@ jsondiff --limit 5 old.json new.json
 ```
 
 `--compact` stays pure JSON (just the kept records, so it still pipes into
-other tools), and `-q` still exits 1 when *any* difference exists — a cap
-limits what you see, not whether the gate fails. `0` (or a negative value)
-means no limit, which is also the default without the flag. In the library:
-`diff(a, b).truncate(5)` caps a `Diff` the same way and records the overflow
-in its `truncated` counter.
+other tools). When `--limit` caps the diff, `--compact` emits only those
+kept records — the overflow count is *not* in the JSON payload, so a capped
+compact output is indistinguishable from a full one unless you check the
+exit code or run `--stats` alongside it. `-q` still exits 1 when *any*
+difference exists — a cap limits what you see, not whether the gate fails.
+`0` (or a negative value) means no limit, which is also the default without
+the flag. In the library: `diff(a, b).truncate(5)` caps a `Diff` the same
+way and records the overflow in its `truncated` counter.
 
 `--limit` combines with every other output flag — the counts it produces are
 the counts of the *kept* records, with the note covering the rest:
