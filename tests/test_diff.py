@@ -1469,3 +1469,44 @@ def test_keyed_one_side_empty_array():
     d = diff(a, b, key_field="id")
     assert len(d.changes) == 2
     assert all(c.kind == "removed" for c in d.changes)
+
+
+# --- --limit cap edge cases (2026-11-23) ------------------------------------
+# The 2026-11-16 batch pinned the basic cap, the no-limit sentinel, and the
+# formatters' truncation note. This batch pins the remaining corners: capping
+# an empty diff, repeated caps (capping is destructive), and a second cap that
+# never grows.
+
+
+def test_cap_on_empty_diff_is_silent():
+    # no changes on either side: the cap has nothing to cut, the counter stays
+    # 0, and every output mode renders its normal "no differences" form
+    d = diff({}, {}).truncate(5)
+    assert len(d.changes) == 0 and d.truncated == 0
+    assert format_report(d) == "No differences."
+    assert format_json(d) == "[]"
+    for fmt in (format_stats, format_summary):
+        out = fmt(d)
+        assert "not shown" not in out
+
+
+def test_repeated_caps_are_destructive():
+    # capping drops records, so a second smaller cap works on what survived:
+    # 3 changes -> cap at 2 -> cap at 1 keeps one and reports the overflow of
+    # the *last* cap only (the record already dropped is gone for good)
+    d = diff({"a": 1, "b": 2, "c": 3}, {"a": 9, "b": 8, "c": 7})
+    d.truncate(2)
+    assert len(d.changes) == 2 and d.truncated == 1
+    d.truncate(1)
+    assert len(d.changes) == 1 and d.truncated == 1
+    assert d.changes[0].path == "$.a"
+
+
+def test_second_cap_larger_than_survivors_is_a_noop():
+    # after a cap, a second cap that does not shrink the survivor set keeps
+    # both the record count and the original overflow counter unchanged
+    d = diff({"a": 1, "b": 2, "c": 3}, {"a": 9, "b": 8, "c": 7})
+    d.truncate(1)
+    d.truncate(5)
+    assert len(d.changes) == 1 and d.truncated == 2
+
